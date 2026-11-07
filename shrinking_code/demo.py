@@ -10,6 +10,7 @@ from .certification import compare
 from .streaming import Inventory
 from .diagnosis import outcome_groups, compare_groups
 from .explanation import Explainer
+from .anomalies import input_isolation, outcome_residuals
 from .alternatives import Alternatives, target_status
 from .selection import HistoricalOracle, select_candidates
 from .prediction import KNNRegressor
@@ -17,14 +18,17 @@ from .evaluation import evaluate, train_test_split
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Cars / Remember, Guess, Certify, Flow, Blame, Justify, Choose and Fix')
+    parser = argparse.ArgumentParser(description='Cars / Remember, Guess, Certify, Flow, Blame, Justify, Choose, Fix and Spot')
     parser.add_argument('--domain', required=True)
     parser.add_argument('--skill', required=True)
     args = parser.parse_args(argv)
-    if args.domain != 'cars' or args.skill not in ('remember', 'guess', 'certify', 'flow', 'blame', 'justify', 'choose', 'fix'):
-        parser.error('Unsupported domain or skill; only cars / remember, guess, certify, flow, blame, justify, choose, and fix are implemented')
+    if args.domain != 'cars' or args.skill not in ('remember', 'guess', 'certify', 'flow', 'blame', 'justify', 'choose', 'fix', 'spot'):
+        parser.error('Unsupported domain or skill; only cars / remember, guess, certify, flow, blame, justify, choose, fix, and spot are implemented')
     path = Path(__file__).resolve().parents[1] / 'data/raw/auto93.csv'
     table = Table.load(path)
+    if args.skill == 'spot':
+        spot(table)
+        return
     if args.skill == 'fix':
         fix(table)
         return
@@ -393,6 +397,34 @@ def fix(table):
           'or causal improvements. Lower d2h does not imply every goal improves. '
           'Missing X differences are unknown; CAR-16 excludes such pairs. '
           'Acc+ follows its header direction; physical interpretation remains uncertain.')
+
+
+def spot(table):
+    print('Cars / Spot — CAR-17 and CAR-18')
+    print(f'Records: {len(table.rows)}; k=5; fixed top-five review policy; offline historical analysis.')
+    print('CAR-17: X-only isolation; normalization uses all historical X; self excluded.')
+    for result in input_isolation(table):
+        if result.flagged:
+            print(f'row={result.row.number} isolation={result.score:.12f} '
+                  f'neighbors={tuple(n for n, _ in result.neighbors)}')
+            print('  X: ' + ', '.join(f'{c.name}={result.row.cells[c.index]}' for c in table.role('x')))
+            print('  ' + result.reason)
+    training, test = train_test_split(table)
+    print(f'CAR-18: seed=42; training={len(training.rows)}; held-out={len(test.rows)}; '
+          'X bounds and kNN use training only; queries have masked goals.')
+    for target in ('Mpg+', 'Lbs-'):
+        print(f'{target}: largest absolute residuals, separately ranked in target units')
+        for result in outcome_residuals(training, test, target):
+            if result.flagged:
+                p = result.prediction
+                print(f'row={result.row.number} actual={result.actual:g} predicted={p.value:.12f} '
+                      f'signed_residual={result.signed:+.12f} absolute_residual={result.score:.12f} '
+                      f'neighbor_range={p.minimum:g}..{p.maximum:g} stddev={p.stddev:.12f} '
+                      f'neighbors={tuple(r.number for r in p.neighbors)}')
+    print('Input isolation describes uncommon X combinations; residuals describe unexpected observed '
+          'outcomes relative to predictions. Flags invite review, not confirmed errors or fraud. '
+          'Top-five ranks imply neither statistical significance nor calibrated anomaly probabilities; '
+          'neighbor ranges/stddev are descriptive, not calibrated prediction intervals.')
 
 
 if __name__ == '__main__':

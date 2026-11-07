@@ -8,9 +8,9 @@ The selected domains and original datasets are:
 - NASA / Software Engineering Project Manager: [nasa93dem.csv](data/raw/nasa93dem.csv).
 - Apache / Apache Web Server Administrator: [Apache_AllMeasurements.csv](data/raw/Apache_AllMeasurements.csv).
 
-## Current milestones: Remember through Fix on Cars
+## Current milestones: Remember through Spot on Cars
 
-**Step 1 — Remember is complete:** CAR-01 (inventory goal summaries) and CAR-02 (ranking recorded multi-goal outcomes). **Step 2 — Guess is complete after validation:** CAR-03 (fuel-efficiency estimates) and CAR-04 (weight estimates with descriptive uncertainty). **Step 3 — Certify is complete after validation:** CAR-05 (cylinder-group MPG comparisons) and CAR-06 (fixed model-year-group performance comparisons). **Step 4 — Flow is complete after validation:** CAR-07 (arrival-time assessment) and CAR-08 (automatic inventory summary and shortlist updates). **Step 5 — Blame is complete after validation:** CAR-09 (poor-MPG group diagnosis) and CAR-10 (unfavorable overall-performance group diagnosis). **Step 6 — Justify is complete after validation:** CAR-11 (recommendation comparisons) and CAR-12 (pairwise goal tradeoffs). **Step 7 — Choose implements** CAR-13 (discover a promising car through limited inspections) and CAR-14 (prioritize inspections and report budget checkpoints). **Step 8 — Fix implements** CAR-15 (similar historical alternatives with better recorded outcomes) and CAR-16 (alternatives meeting more targets with fewer X differences). The remaining two skills—Spot and Race—and the NASA and Apache demonstrations are not yet implemented.
+**Step 1 — Remember is complete:** CAR-01 (inventory goal summaries) and CAR-02 (ranking recorded multi-goal outcomes). **Step 2 — Guess is complete after validation:** CAR-03 (fuel-efficiency estimates) and CAR-04 (weight estimates with descriptive uncertainty). **Step 3 — Certify is complete after validation:** CAR-05 (cylinder-group MPG comparisons) and CAR-06 (fixed model-year-group performance comparisons). **Step 4 — Flow is complete after validation:** CAR-07 (arrival-time assessment) and CAR-08 (automatic inventory summary and shortlist updates). **Step 5 — Blame is complete after validation:** CAR-09 (poor-MPG group diagnosis) and CAR-10 (unfavorable overall-performance group diagnosis). **Step 6 — Justify is complete after validation:** CAR-11 (recommendation comparisons) and CAR-12 (pairwise goal tradeoffs). **Step 7 — Choose implements** CAR-13 (discover a promising car through limited inspections) and CAR-14 (prioritize inspections and report budget checkpoints). **Step 8 — Fix implements** CAR-15 (similar historical alternatives with better recorded outcomes) and CAR-16 (alternatives meeting more targets with fewer X differences). **Step 9 — Spot implements** CAR-17 (X isolation) and CAR-18 (held-out MPG and weight residual review). The remaining skill—Race—and the NASA and Apache demonstrations are not yet implemented.
 
 From the repository root, using Python 3.8+ and only its standard library:
 
@@ -23,6 +23,7 @@ python3 -m shrinking_code.demo --domain cars --skill blame
 python3 -m shrinking_code.demo --domain cars --skill justify
 python3 -m shrinking_code.demo --domain cars --skill choose
 python3 -m shrinking_code.demo --domain cars --skill fix
+python3 -m shrinking_code.demo --domain cars --skill spot
 ```
 
 The Remember demo reads the actual CSV, reports record counts and column roles, summarizes all three goals, and shows the top five cars with their original data-row numbers, independent characteristics, recorded goals, and scores. Unsupported domains or skills produce an explicit error and a nonzero exit status.
@@ -49,7 +50,8 @@ Tests cover real data summaries and roles, categorical values, missing data, han
 - `shrinking_code/explanation.py`: structured historical score contributions, X neighbors, and pairwise tradeoff evidence using existing ranking and distance.
 - `shrinking_code/selection.py`: masked candidate oracle, sequential predicted-d2h selection, and inspection/checkpoint records.
 - `shrinking_code/alternatives.py`: observed-alternative searches, exact X differences, and direction-aware target satisfaction using existing explanations.
-- `shrinking_code/demo.py`: Cars Remember through Fix demonstrations; domain configuration stays here.
+- `shrinking_code/anomalies.py`: X-only nearest-neighbor isolation and separately ranked held-out target residuals with structured review flags.
+- `shrinking_code/demo.py`: Cars Remember through Spot demonstrations; domain configuration stays here.
 
 Uppercase initial letters denote numeric columns; lowercase initials denote symbolic columns. Goal suffixes `+` and `-` denote numeric goals to maximize and minimize. Suffix `X` excludes a column from inputs and goals while retaining its values for inspection. Remaining columns are inputs. Thus `origin` remains a string category and `HpX` is ignored. The six `?` horsepower entries load as `None`.
 
@@ -256,10 +258,52 @@ Limitations: recommendations depend on the reference inventory, recorded fields,
 
 Step 8 validation: **144 tests pass, 0 fail**, including 21 new Fix tests. All eight demos execute successfully; all seven previous outputs match saved pre-Fix hashes. Tests independently verify the Cars search ordering and synthetic lexicographic priorities, target directions, missing/constant data, exact changes, and goal tradeoffs. The Step 7 oracle module is byte-for-byte unchanged and its leakage tests still pass. No test failures or implementation bugs surfaced; no earlier core refactoring was needed. Raw data, frozen documents, HEAD, branches, and milestone tags remain unchanged.
 
+## Spot: historical anomaly review
+
+CAR-17 and CAR-18 provide two separate descriptive review lists. `input_isolation(reference, k=5, top=5)` scores each record by the mean distance to up to five other eligible records, using the existing `XDistance` fitted on **all historical X**. Goals and ignored fields never enter distance or normalization. Self is excluded by original ID; duplicate X combinations with distinct IDs remain neighbors. Neighbor selection follows existing kNN ordering (distance rounded to 12 decimals, then ID); the mean uses unrounded distances and `NumericSummary`. Anomaly ranks use descending raw mean distance, then original ID. This is descriptive inventory analysis, not a held-out model evaluation.
+
+The existing distance policies apply: numeric columns use reference bounds, categories (including numeric-looking codes) compare by equality, constant numeric columns contribute zero, and missing X is omitted pairwise. Fewer than k eligible neighbors uses all available neighbors. No comparable other records, including singletons, yield `score=None`, no neighbors, and no flag; empty input yields no findings. Duplicate IDs and invalid k/top (nonpositive integers, booleans, or nonintegers) are rejected. Structured `Isolation` findings retain the row, score, neighbor IDs/distances, flag, and reason. Returned results include unflagged and unscored records, with unscored records last.
+
+`outcome_residuals(training, test, target, k=5, top=5)` reuses `KNNRegressor` unchanged. Cars uses Guess's **seed-42 split: 318 training and 80 held-out records**, separately for Mpg+ and Lbs-. Numerical X normalization and all prediction neighbors use training records only. Before prediction, every query's Y and ignored cells are masked with `None`; only after prediction is its actual target used for the signed residual `actual - predicted` and absolute residual score. There is no held-out tuning of k, model fitting, or residual scaling. Results rank by descending absolute residual, then original ID. Raw MPG and weight residuals are never combined.
+
+Structured `Residual` findings retain the target, actual value, existing `Prediction` (mean, neighbor range, population standard deviation, and identities), signed/absolute residual, and flag/reason. Schema mismatch, duplicate test IDs, train/test overlap, unavailable targets, and absent training target observations are rejected. Missing test targets remain unscored and unflagged with no fabricated prediction; they do not enter the review ranking. As in Guess, an observed target with no comparable observed training neighbors raises an explicit error instead of silently inventing a score. Empty test sets return no findings when training and target are valid.
+
+The **top-five policy is fixed in advance**, separately for X isolation, MPG residuals, and weight residuals. Up to five scored records are flagged even when scores are zero or only mildly unusual; this is not a learned cutoff, significance test, calibrated anomaly probability, or assertion that the flagged records contain mistakes. Neighbor ranges and standard deviations describe observed dispersion, not calibrated prediction intervals.
+
+Actual CAR-17 flags (mean X distances displayed to 12 decimals):
+
+- Row **155**: **0.184120948940**; neighbors 142, 193, 189, 200, 221.
+- Row **142**: **0.150201119972**; neighbors 193, 155, 342, 222, 226.
+- Row **193**: **0.134944217027**; neighbors 142, 342, 226, 155, 243.
+- Row **243**: **0.130941369609**; neighbors 226, 342, 193, 335, 142.
+- Row **226**: **0.130269904498**; neighbors 243, 342, 193, 328, 344.
+
+Actual CAR-18 MPG flags, shown as actual → predicted; signed residual; absolute residual:
+
+- Row **182**: 20 → 32; **−12; 12**.
+- Row **215**: 20 → 32; **−12; 12**.
+- Row **184**: 20 → 30; **−10; 10**.
+- Row **141**: 20 → 28; **−8; 8**.
+- Row **195**: 20 → 28; **−8; 8**.
+
+Actual CAR-18 weight flags in recorded Lbs- units:
+
+- Row **141**: 3270 → 2394.6; **+875.4; 875.4**.
+- Row **182**: 2720 → 1914; **+806; 806**.
+- Row **50**: 4638 → 4013.2; **+624.8; 624.8**.
+- Row **126**: 3205 → 3821; **−616; 616**.
+- Row **13**: 4499 → 3931; **+568; 568**.
+
+The CLI computes these results and also shows recorded X, prediction neighbor IDs, ranges, and standard deviations. Tests use independent synthetic distances/residuals, verify prediction equality with Guess, perturb Y without changing X isolation, and change held-out labels without changing predictions. A guarded predictor verifies masked queries and training-only normalization.
+
+Limitations: isolation depends on k, reference scaling, missing-data comparability, and inventory composition; uncommon combinations may be valid. Residuals can reflect predictor limitations, sparse neighbors, unrecorded factors, or genuine variation. Coarse MPG and shared X combinations limit interpretation. Top-five lists provide no error-rate control and require independent review before calling a record erroneous. This is offline historical analysis, not a deployed fraud or data-quality detector. No Race, other-domain demonstration, or experimental treatment comparison is implemented.
+
+Step 9 validation: **161 tests pass, 0 fail**, including 17 new Spot tests. All nine demos execute successfully; the previous eight outputs match saved pre-Spot SHA-256 hashes. Repeated Spot output is identical, and both synthetic and real-data checks preserve Guess prediction semantics. No bugs or test failures surfaced. Earlier core modules, raw data, frozen documents, HEAD, branches, and milestone tags remain unchanged.
+
 ## Reproducibility and disclosure
 
 Development proceeds incrementally to preserve accurate code-history measurements. Review each working milestone before manually committing and tagging it; this implementation does not create commits, tags, or pushes. Raw datasets, frozen requirements, and hypotheses remain unchanged.
 
-The Step 1 through Step 8 code, tests, and README changes were generated with LLM assistance. This development session is not an independent experimental trial and must not be labeled as human-written treatment code. No LOC measurements, treatment comparisons, or success claims about the research hypotheses are supplied here.
+The Step 1 through Step 9 code, tests, and README changes were generated with LLM assistance. This development session is not an independent experimental trial and must not be labeled as human-written treatment code. No LOC measurements, treatment comparisons, or success claims about the research hypotheses are supplied here.
 
 Course references: [project specification](https://github.com/txt/seai26f/blob/main/docs/submit/uproj.md) and [graduate scope](https://github.com/txt/seai26f/blob/main/docs/submit/gproj.md).
