@@ -8,15 +8,16 @@ The selected domains and original datasets are:
 - NASA / Software Engineering Project Manager: [nasa93dem.csv](data/raw/nasa93dem.csv).
 - Apache / Apache Web Server Administrator: [Apache_AllMeasurements.csv](data/raw/Apache_AllMeasurements.csv).
 
-## Current milestones: Remember and Guess on Cars
+## Current milestones: Remember, Guess, and Certify on Cars
 
-**Step 1 — Remember is complete:** CAR-01 (inventory goal summaries) and CAR-02 (ranking recorded multi-goal outcomes). **Step 2 — Guess is complete after validation:** CAR-03 (fuel-efficiency estimates) and CAR-04 (weight estimates with descriptive uncertainty). The remaining eight skills—Certify, Flow, Blame, Justify, Choose, Fix, Spot, and Race—and the NASA and Apache demonstrations are not yet implemented.
+**Step 1 — Remember is complete:** CAR-01 (inventory goal summaries) and CAR-02 (ranking recorded multi-goal outcomes). **Step 2 — Guess is complete after validation:** CAR-03 (fuel-efficiency estimates) and CAR-04 (weight estimates with descriptive uncertainty). **Step 3 — Certify is complete after validation:** CAR-05 (cylinder-group MPG comparisons) and CAR-06 (fixed model-year-group performance comparisons). The remaining seven skills—Flow, Blame, Justify, Choose, Fix, Spot, and Race—and the NASA and Apache demonstrations are not yet implemented.
 
 From the repository root, using Python 3.8+ and only its standard library:
 
 ```sh
 python3 -m shrinking_code.demo --domain cars --skill remember
 python3 -m shrinking_code.demo --domain cars --skill guess
+python3 -m shrinking_code.demo --domain cars --skill certify
 ```
 
 The Remember demo reads the actual CSV, reports record counts and column roles, summarizes all three goals, and shows the top five cars with their original data-row numbers, independent characteristics, recorded goals, and scores. Unsupported domains or skills produce an explicit error and a nonzero exit status.
@@ -37,7 +38,8 @@ Tests cover real data summaries and roles, categorical values, missing data, han
 - `shrinking_code/distance.py`: immutable training-fitted mixed-type X distance, reusing column roles, summaries, and normalization.
 - `shrinking_code/prediction.py`: immutable k-nearest-neighbors regressor for any numerical goal and descriptive neighbor uncertainty.
 - `shrinking_code/evaluation.py`: deterministic row split, MAE, and a training-mean baseline for this holdout evaluation.
-- `shrinking_code/demo.py`: the Cars Remember and Guess command-line demonstrations.
+- `shrinking_code/certification.py`: domain-independent numeric distribution comparison with sample summaries and diagnostic thresholds.
+- `shrinking_code/demo.py`: Cars Remember, Guess, and Certify demonstrations; domain grouping stays here.
 
 Uppercase initial letters denote numeric columns; lowercase initials denote symbolic columns. Goal suffixes `+` and `-` denote numeric goals to maximize and minimize. Suffix `X` excludes a column from inputs and goals while retaining its values for inspection. Remaining columns are inputs. Thus `origin` remains a string category and `HpX` is ignored. The six `?` horsepower entries load as `None`.
 
@@ -80,14 +82,55 @@ Both MAEs are lower than the baseline on this split. This is descriptive holdout
 
 Limitations: **29 of 80 test rows share X combinations with training**, so this split does not establish generalization to entirely new configurations. MPG values are coarse, and the small historical dataset may not represent new inventory. Equal feature weighting and k=5 are initial fixed choices. Pairwise missing-input omission can favor neighbors compared on fewer features; constant features cannot detect novelty. Neighbor dispersion does not measure all prediction error. Exact neighbor search scans all training rows.
 
-Step 2 validation covers training-only normalization, identity separation, deterministic splits/ties, missing inputs and targets, independent synthetic distances/predictions/MAEs, baseline correctness, reproducible CLI output, and Step 1 regression tests. The full suite has 42 passing tests. Independent raw-CSV verification caught a floating-point tie-ordering discrepancy; ordering now rounds distances to 12 decimal places before breaking ties by row identity, with a regression test. The reported MAEs above use this corrected policy.
+Step 2 validation covers training-only normalization, identity separation, deterministic splits/ties, missing inputs and targets, independent synthetic distances/predictions/MAEs, baseline correctness, reproducible CLI output, and Step 1 regression tests. At Step 2, the suite had 42 passing tests. Independent raw-CSV verification caught a floating-point tie-ordering discrepancy; ordering now rounds distances to 12 decimal places before breaking ties by row identity, with a regression test. The reported MAEs above use this corrected policy.
 
 Step 1 refactoring: only CLI dispatch/help changed to add Guess; the Remember output body and shared data, statistics, and ranking modules remain unchanged. The old unsupported-Guess test now checks unsupported Certify instead. New prediction/evaluation logic is separate from these existing components.
+
+## Certify: reference semantics and limits
+
+The implementation follows [`ezr.lua` at revision 4ce98345](https://github.com/txt/seai26f/blob/4ce98345eb2632d07bd6c950322a96649e2aba0e/src/ezr-lua/ezr.lua#L613) and its [`ezr-eg6.lua --same` example](https://github.com/txt/seai26f/blob/4ce98345eb2632d07bd6c950322a96649e2aba0e/src/ezr-lua/ezr-eg6.lua). The source combines absolute pooled-sample-SD Cohen effect size, absolute Cliff's rank imbalance, and scaled two-sample KS. Its rule is:
+
+```text
+same = (cohen <= 0.35) AND (cliffs <= 0.195) AND (KS <= 1.36)
+cohen = abs(mean_left - mean_right) / (pooled_sample_SD + 1e-32)
+D = max absolute difference between the empirical CDFs
+KS = D / sqrt((n + m) / (n * m))
+cliffs = abs(number_of_left_wins - number_of_right_wins) / (n * m)
+```
+
+Thus `same=True` means all screens are within thresholds; it does **not** prove equivalence. `same=False` means at least one threshold is exceeded. It does **not** require all three to indicate a difference. Effect sizes alone do not establish statistical significance. The source's short-circuit evaluation computes only needed screens; our diagnostics compute all three. Sample variance uses Python's standard library rather than Lua's incremental accumulator, so floating-point boundary differences remain possible.
+
+`compare()` returns both numerical summaries, diagnostics, the `same` decision, and exceeded screen names. `same()` returns the decision alone. Both accept threshold overrides in source order (Cohen, KS, Cliffs); demos use the source defaults. Missing `None` values are omitted, nonfinite values rejected, and input is sorted internally. Fewer than two observations in either group yields `same=None` (insufficient), an explicit safety policy absent from Lua. Equal constants give zero effects; unequal constants retain the source's epsilon-regularized large Cohen value. Tied observations enter empirical CDFs together and contribute no wins/losses to Cliff's delta.
+
+Validation used the actual pinned Lua source and installed Lua runtime, not a second Python translation. Seven reference cases are stored in `tests/fixtures/same_reference.json` with source revision and SHA-256: identical, separated, tied, unequal-size, equal-constant, effect-only, and shape-only samples. The standard-library tests read those fixtures and need neither Lua nor network access. All seven real Cars comparisons also matched Lua metrics (within 1e-12 tolerance) and decisions. The actual eg6 `--same` function body and its `bag`/`again` helpers were executed with seed 42: the jittered sample returned true and the shifted sample false. This does not claim exhaustive numerical equivalence.
+
+CAR-05 discovers cylinder groups from the data and reports every pair. CAR-06 fixes ranges at 70–76 and 77–82, scores all records once using existing `rank_rows()` and full-historical-table bounds, then groups those scores. No separate group normalization or Step 1 score change occurs. Missing goal values are excluded by the existing ranker; missing grouping values and years outside the fixed ranges are not assigned to a group.
+
+Observed group summaries (mean, median):
+
+- MPG, 3 cylinders: n=4, 20.000000, 20.000000.
+- MPG, 4 cylinders: n=204, 29.509804, 30.000000.
+- MPG, 6 cylinders: n=87, 21.264368, 20.000000.
+- MPG, 8 cylinders: n=103, 14.951456, 10.000000.
+- d2h, years 70–76: n=216, 0.616387, 0.589882.
+- d2h, years 77–82: n=182, 0.483939, 0.465962.
+
+All pairwise results, expressed as exceeded screens:
+
+- 3 vs 4 cylinders: Cohen, Cliff's, KS (`same=False`).
+- 3 vs 6 cylinders: none (`same=True`; not distinguished, not proven equivalent).
+- 3 vs 8 cylinders: Cohen and Cliff's only (`same=False`; KS does not exceed its threshold).
+- 4 vs 6, 4 vs 8, and 6 vs 8 cylinders: all three (`same=False` for each).
+- Years 70–76 vs 77–82: all three (`same=False`); later records have lower mean and median d2h.
+
+These procedure-based distinctions are exploratory historical associations. Six cylinder comparisons are unadjusted for multiplicity; no family-wise significance claim is made. The KS cutoff is an asymptotic rule, not an exact tied-data or small-sample test or a computed p-value. In particular, the 3-cylinder group has only four records, and MPG is coarse with many ties. Independence and representativeness are not established by the CSV. Neither cylinder count nor model-year code is proven to cause an outcome. Practical inventory decisions need more evidence; d2h retains the unresolved physical interpretation of `Acc+`.
+
+Step 3 validation: 56 tests pass. Remember and Guess complete outputs remain byte-for-byte unchanged. Existing modules were reused without refactoring; only CLI dispatch/help was extended and the unsupported-Certify test now uses Flow. No statistical runtime error or failing unit test was found. The initial guessed reference filename `eg6.lua` was corrected to the repository's actual `ezr-eg6.lua` before implementation.
 
 ## Reproducibility and disclosure
 
 Development proceeds incrementally to preserve accurate code-history measurements. Review each working milestone before manually committing and tagging it; this implementation does not create commits, tags, or pushes. Raw datasets, frozen requirements, and hypotheses remain unchanged.
 
-The Step 1 and Step 2 code, tests, and README changes were generated with LLM assistance. This development session is not an independent experimental trial and must not be labeled as human-written treatment code. No LOC measurements, treatment comparisons, or success claims about the research hypotheses are supplied here.
+The Step 1, Step 2, and Step 3 code, tests, and README changes were generated with LLM assistance. This development session is not an independent experimental trial and must not be labeled as human-written treatment code. No LOC measurements, treatment comparisons, or success claims about the research hypotheses are supplied here.
 
 Course references: [project specification](https://github.com/txt/seai26f/blob/main/docs/submit/uproj.md) and [graduate scope](https://github.com/txt/seai26f/blob/main/docs/submit/gproj.md).
