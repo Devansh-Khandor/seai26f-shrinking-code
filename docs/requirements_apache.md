@@ -4,7 +4,8 @@
 **Project:** The Shrinking-Code Experiment  
 **Dataset:** `data/raw/Apache_AllMeasurements.csv`  
 **Client:** Apache Web Server Administrator  
-**Status:** Draft — Pending Lecturer Approval
+**Status:** Version 1.0 — Frozen requirements baseline  
+**Baseline date:** November 6, 2026 (before implementation)
 
 ## Client Background
 
@@ -28,7 +29,7 @@ We want recommendations that are explainable, supported by historical evidence, 
 
 **APACHE-03:** Before running a benchmark on a configuration, estimate its likely performance value from its settings and our historical benchmark records.
 
-**APACHE-04:** When I change one configuration setting, estimate how the performance value might differ from the original configuration and indicate how uncertain that estimate is.
+**APACHE-04:** When comparing two historically observed valid configurations that differ by one setting, estimate their potential performance difference and indicate how uncertain that estimate is.
 
 ### 3. Certify — Certification
 
@@ -70,7 +71,7 @@ We want recommendations that are explainable, supported by historical evidence, 
 
 **APACHE-17:** Identify configurations whose recorded performance values are unusually different from what their settings and comparable historical configurations would lead us to expect.
 
-**APACHE-18:** Flag unusually uncommon combinations of configuration settings for administrator review, even when their performance measurements are not obviously poor.
+**APACHE-18:** Flag configurations whose combinations of settings differ substantially from the most similar configurations in our historical benchmark records, even when their measured performance is not obviously poor.
 
 ### 10. Race — Baseline Comparison
 

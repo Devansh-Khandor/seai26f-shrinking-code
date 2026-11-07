@@ -4,7 +4,8 @@
 **Project:** The Shrinking-Code Experiment  
 **Dataset:** `data/raw/nasa93dem.csv`  
 **Client:** Software Engineering Project Manager  
-**Status:** Draft — Pending Lecturer Approval
+**Status:** Version 1.0 — Frozen requirements baseline  
+**Baseline date:** November 6, 2026 (before implementation)
 
 ## Client Background
 
@@ -62,7 +63,7 @@ We want an AI-assisted decision-support system that helps us estimate outcomes, 
 
 **NASA-15:** For a project proposal predicted to require excessive effort, identify plausible changes to adjustable planning or process characteristics that might reduce its predicted effort.
 
-**NASA-16:** For a project proposal with a high predicted defect count, identify the smallest plausible combination of adjustable planning changes that could improve its predicted quality without creating unacceptable tradeoffs.
+**NASA-16:** For a project proposal with a high predicted defect count, identify the smallest plausible combination of changes to adjustable planning or process characteristics that could improve its predicted quality, while explaining potential tradeoffs.
 
 ### 9. Spot — Anomaly Detection
 
@@ -86,5 +87,3 @@ We want an AI-assisted decision-support system that helps us estimate outcomes, 
 - Suggested project changes are hypothetical and must be restricted to plausible, explicitly designated adjustable characteristics.
 - The relatively small dataset may limit predictive accuracy and statistical certainty.
 - The requirements are intended to support incremental demonstrations and cross-domain reuse without assuming that reuse will necessarily reduce implementation effort.
-
-**Approval:** Pending lecturer review.

@@ -4,7 +4,8 @@
 **Project:** The Shrinking-Code Experiment  
 **Dataset:** `data/raw/auto93.csv`  
 **Client:** Independent Used-Car Dealership  
-**Status:** Draft — Pending Lecturer Approval
+**Status:** Version 1.0 — Frozen requirements baseline  
+**Baseline date:** November 6, 2026 (before implementation)
 
 ## Client Background
 
@@ -60,9 +61,9 @@ We want the system to help our staff make informed decisions while explaining un
 
 ### 8. Fix — Repair
 
-**CAR-15:** For a poorly rated vehicle, show which feasible changes to its recorded characteristics could hypothetically lead to a better predicted performance assessment.
+**CAR-15:** For a poorly rated vehicle, show me alternative vehicles in our historical inventory with similar characteristics but better recorded performance, and explain which differences could account for the improvement.
 
-**CAR-16:** Find the smallest plausible change to a vehicle's adjustable characteristics that would move its predicted assessment closer to our preferred performance targets.
+**CAR-16:** For a vehicle that does not meet our preferred performance targets, identify the closest available alternative that meets more of those targets while changing as few vehicle characteristics as possible.
 
 ### 9. Spot — Anomaly Detection
 
