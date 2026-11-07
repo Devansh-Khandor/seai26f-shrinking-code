@@ -10,19 +10,23 @@ from .certification import compare
 from .streaming import Inventory
 from .diagnosis import outcome_groups, compare_groups
 from .explanation import Explainer
+from .selection import HistoricalOracle, select_candidates
 from .prediction import KNNRegressor
 from .evaluation import evaluate, train_test_split
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Cars / Remember, Guess, Certify, Flow, Blame and Justify')
+    parser = argparse.ArgumentParser(description='Cars / Remember, Guess, Certify, Flow, Blame, Justify and Choose')
     parser.add_argument('--domain', required=True)
     parser.add_argument('--skill', required=True)
     args = parser.parse_args(argv)
-    if args.domain != 'cars' or args.skill not in ('remember', 'guess', 'certify', 'flow', 'blame', 'justify'):
-        parser.error('Unsupported domain or skill; only cars / remember, guess, certify, flow, blame, and justify are implemented')
+    if args.domain != 'cars' or args.skill not in ('remember', 'guess', 'certify', 'flow', 'blame', 'justify', 'choose'):
+        parser.error('Unsupported domain or skill; only cars / remember, guess, certify, flow, blame, justify, and choose are implemented')
     path = Path(__file__).resolve().parents[1] / 'data/raw/auto93.csv'
     table = Table.load(path)
+    if args.skill == 'choose':
+        choose(table)
+        return
     if args.skill == 'guess':
         guess(table)
         return
@@ -298,6 +302,41 @@ def justify(table):
           'price, mechanical reliability, or faster physical acceleration; Acc+ meaning is '
           'uncertain. Similarity with missing X can use fewer fields; incomplete goals remain '
           'unranked. This explains a historical score, not a causal mechanism or held-out prediction.')
+
+
+def choose(table):
+    training, hidden = train_test_split(table)
+    budget = 40
+    oracle = HistoricalOracle(hidden, budget)
+    print('Cars / Choose — CAR-13 and CAR-14')
+    print('Offline inspection simulation using held-out historical records; seed=42.')
+    print(f'Historical training: {len(training.rows)}; candidate pool: {len(oracle.visible.rows)}')
+    print(f'Policy: greedy lowest predicted d2h, ties by original row ID; k=5; budget={budget}')
+    print('Fixed initial-training goal bounds; no clipping; constants normalize to 0.5:')
+    for c in training.role('y'):
+        summary = summarize(training, c)
+        print(f'  {c.name}: {summary.minimum:g}..{summary.maximum:g}')
+    result = select_candidates(training, oracle.visible, oracle.inspect, budget)
+    print('CAR-13: predictions recorded before inspection; actual goals shown only after inspection.')
+    for cost, decision in enumerate(result.inspections, 1):
+        print(f'inspection={cost} row={decision.row.number} '
+              f'predicted_goals={decision.predicted_goals} predicted_d2h={decision.predicted_score:.9f} '
+              f'actual_goals={tuple(decision.row.cells[c.index] for c in training.role("y"))} '
+              f'actual_d2h={decision.observed_score:.9f}')
+    print(f'Inspected IDs: {oracle.inspected}')
+    print(f'Actual inspection cost: {len(oracle.inspected)}; '
+          f'per-goal prediction computations: {result.prediction_count}')
+    print('CAR-14: checkpoints from the same run (lower best-so-far d2h is better):')
+    for cost in (10, 20, 40):
+        state = result.checkpoint(cost)
+        print(f'budget={cost} best_row={state.best_row.number} best_d2h={state.best_score:.9f}')
+    final = result.inspections[-1]
+    print(f'Final recommended inspected car: row={final.best_row.number}, d2h={final.best_score:.9f}')
+    print('Recorded X and revealed Y: ' + ', '.join(
+        f'{c.name}={final.best_row.cells[c.index]}' for c in training.columns if c.role != 'ignored'))
+    print('Heuristic best among inspected candidates; no global optimality or inspection-efficiency '
+          'claim. No random baseline or Race comparison. Acc+ is maximized as recorded; '
+          'physical meaning remains uncertain.')
 
 
 if __name__ == '__main__':

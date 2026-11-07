@@ -8,9 +8,9 @@ The selected domains and original datasets are:
 - NASA / Software Engineering Project Manager: [nasa93dem.csv](data/raw/nasa93dem.csv).
 - Apache / Apache Web Server Administrator: [Apache_AllMeasurements.csv](data/raw/Apache_AllMeasurements.csv).
 
-## Current milestones: Remember through Justify on Cars
+## Current milestones: Remember through Choose on Cars
 
-**Step 1 — Remember is complete:** CAR-01 (inventory goal summaries) and CAR-02 (ranking recorded multi-goal outcomes). **Step 2 — Guess is complete after validation:** CAR-03 (fuel-efficiency estimates) and CAR-04 (weight estimates with descriptive uncertainty). **Step 3 — Certify is complete after validation:** CAR-05 (cylinder-group MPG comparisons) and CAR-06 (fixed model-year-group performance comparisons). **Step 4 — Flow is complete after validation:** CAR-07 (arrival-time assessment) and CAR-08 (automatic inventory summary and shortlist updates). **Step 5 — Blame is complete after validation:** CAR-09 (poor-MPG group diagnosis) and CAR-10 (unfavorable overall-performance group diagnosis). **Step 6 — Justify is complete after validation:** CAR-11 (recommendation comparisons) and CAR-12 (pairwise goal tradeoffs). The remaining four skills—Choose, Fix, Spot, and Race—and the NASA and Apache demonstrations are not yet implemented.
+**Step 1 — Remember is complete:** CAR-01 (inventory goal summaries) and CAR-02 (ranking recorded multi-goal outcomes). **Step 2 — Guess is complete after validation:** CAR-03 (fuel-efficiency estimates) and CAR-04 (weight estimates with descriptive uncertainty). **Step 3 — Certify is complete after validation:** CAR-05 (cylinder-group MPG comparisons) and CAR-06 (fixed model-year-group performance comparisons). **Step 4 — Flow is complete after validation:** CAR-07 (arrival-time assessment) and CAR-08 (automatic inventory summary and shortlist updates). **Step 5 — Blame is complete after validation:** CAR-09 (poor-MPG group diagnosis) and CAR-10 (unfavorable overall-performance group diagnosis). **Step 6 — Justify is complete after validation:** CAR-11 (recommendation comparisons) and CAR-12 (pairwise goal tradeoffs). **Step 7 — Choose implements** CAR-13 (discover a promising car through limited inspections) and CAR-14 (prioritize inspections and report budget checkpoints). The remaining three skills—Fix, Spot, and Race—and the NASA and Apache demonstrations are not yet implemented.
 
 From the repository root, using Python 3.8+ and only its standard library:
 
@@ -21,6 +21,7 @@ python3 -m shrinking_code.demo --domain cars --skill certify
 python3 -m shrinking_code.demo --domain cars --skill flow
 python3 -m shrinking_code.demo --domain cars --skill blame
 python3 -m shrinking_code.demo --domain cars --skill justify
+python3 -m shrinking_code.demo --domain cars --skill choose
 ```
 
 The Remember demo reads the actual CSV, reports record counts and column roles, summarizes all three goals, and shows the top five cars with their original data-row numbers, independent characteristics, recorded goals, and scores. Unsupported domains or skills produce an explicit error and a nonzero exit status.
@@ -45,7 +46,8 @@ Tests cover real data summaries and roles, categorical values, missing data, han
 - `shrinking_code/streaming.py`: validates and accepts sequential records, reusing existing summaries and ranking to maintain exact inventory state.
 - `shrinking_code/diagnosis.py`: fixed outcome-quartile selection and structured numeric/categorical X-only diagnostic evidence.
 - `shrinking_code/explanation.py`: structured historical score contributions, X neighbors, and pairwise tradeoff evidence using existing ranking and distance.
-- `shrinking_code/demo.py`: Cars Remember through Justify demonstrations; domain configuration stays here.
+- `shrinking_code/selection.py`: masked candidate oracle, sequential predicted-d2h selection, and inspection/checkpoint records.
+- `shrinking_code/demo.py`: Cars Remember through Choose demonstrations; domain configuration stays here.
 
 Uppercase initial letters denote numeric columns; lowercase initials denote symbolic columns. Goal suffixes `+` and `-` denote numeric goals to maximize and minimize. Suffix `X` excludes a column from inputs and goals while retaining its values for inspection. Remaining columns are inputs. Thus `origin` remains a string category and `HpX` is ignored. The six `?` horsepower entries load as `None`.
 
@@ -195,10 +197,39 @@ Limitations: explanations depend on reference bounds and the equal-weight policy
 
 Step 6 validation: **102 tests pass**. Tests reconstruct every Cars score from contributions and cover constants, missing goals, common bounds, neighbors, tradeoffs, no-pair cases, and all five previous demo-output hashes. One initial synthetic-test failure was corrected: a column named `X` was correctly ignored by the existing MOOT suffix rule, so the intended input was renamed `Size`. Production conventions were unchanged. No earlier core refactoring was needed; only CLI dispatch/help and the unsupported-skill test were extended.
 
+## Choose: budget-constrained candidate inspection
+
+CAR-13 and CAR-14 use the same seed-42 split as Guess: **318 known historical rows and 80 candidate rows**. This is a separate offline simulation of inspections using held-out historical records, not live optimization or a revised Guess evaluation. An inspection reveals all available goals for exactly one candidate and costs one; initial historical records and prediction computations are not charged as inspections. Checkpoints at 10, 20, and 40 are prefixes of one 40-inspection run, with no restart or independent tuning.
+
+`HistoricalOracle` owns hidden candidate Y. Its immutable `visible` table retains original IDs, schema, and X cells but masks both goals and ignored fields with `None`. `select_candidates(training, visible, inspect, budget, k)` receives this masked table and a narrow callback returning only the selected record's goals. It rejects unmasked candidates, duplicate IDs, overlapping train/candidate identities, and mismatched schemas. The oracle rejects unknown IDs, repeat inspections, and calls beyond its budget, and exposes a read-only tuple of inspected IDs. This is an explicit software API boundary, not protection against malicious Python introspection. The demo orchestration loads the CSV; the selection policy never receives the unmasked candidate table.
+
+Each round reuses `KNNRegressor` with k=5 and its existing mixed-type `XDistance` (p=2) to predict every goal for each remaining candidate. It reuses `distance_to_heaven()` with equal goal weights to score predicted goal tuples, selects the lowest score with original row ID breaking exact score ties, then calls the oracle. Actual revealed values receive the same score; the best inspected complete-goal row is retained (score, then ID). The newly observed record joins training for the next round. Predictions saved in each immutable `Inspection` are those at selection time, not later refitted predictions. The result includes per-goal prediction count and exact prefix checkpoints.
+
+Goal summaries are fitted **once, only on the initial training rows**, using `summarize()`. The Cars training bounds happen to match the full CSV bounds: Lbs- 1613..5140, Acc+ 8..24.8, Mpg+ 10..50. That coincidence is not used by the algorithm; synthetic tests use different candidate ranges. X normalization is refitted on the growing observed training pool. Existing normalization is preserved without clipping: values outside nonconstant training bounds extrapolate, and squared distance penalizes overshooting even the favorable ideal. A constant goal always normalizes to 0.5, including a newly revealed different value. Bounds never expand after an inspection. These policies preserve prior scoring semantics but limit the desirability interpretation outside the reference range.
+
+Budgets must be nonnegative integers (booleans rejected). Zero makes no inspections; one permits one; an oversized budget stops at pool exhaustion. Empty candidate pools return empty results. Training must be nonempty with at least one observed value for every goal. Missing revealed goals still cost one and contribute available targets to future training, but the incomplete row cannot be recommended. Until a complete row is inspected, best row/score are `None`. If a remaining candidate has no comparable observed neighbors for a goal, selection raises before that round's inspection rather than assigning an invented score. Earlier inspections remain charged in the oracle. Malformed oracle responses raise; a real inspection already performed is not refunded. Checkpoints beyond completed inspections are rejected, and checkpoint zero returns `None`.
+
+Actual run: **40 distinct inspections**, **7,260 per-goal predictions** (2,420 candidate scoring computations). Inspection order:
+
+```text
+358, 380, 347, 364, 361, 352, 386, 390, 182, 389,
+303, 322, 378, 383, 387, 333, 259, 310, 184, 215,
+328, 367, 395, 317, 341, 296, 309, 360, 302, 230,
+233, 275, 141, 288, 280, 283, 217, 136, 195, 175
+```
+
+At budgets **10 and 20**, best inspected row is **390**, d2h **0.253947221**. At budget **40**, it is **395**, d2h **0.167459891**, first inspected at cost 23. Its X values are Clndrs=4, Volume=97, Model=82, origin category=2; revealed goals are Lbs-=2130, Acc+=24.6, Mpg+=40. The CLI prints every decision's predicted goals/score and subsequently revealed goals/score, followed by the checkpoints and final recommendation. These are computed simulation results, not experimental treatment comparisons.
+
+Tests use hand-calculated synthetic decisions, direction checks, ties, missing goals, constants, extrapolation, and changing next decisions after an observation. Adversarial tests alter hidden Y while preserving X and verify unchanged initial decisions, and alter a later outcome while preserving the earlier prefix. A guarded model verifies that its training IDs contain only initial and previously inspected records and that every query has masked Y/ignored cells. CLI tests check deterministic complete output, inspection counts, and independently recovered prefix minima; saved pre-Choose hashes protect all six prior demos.
+
+Limitations: greedy selection has no exploration or global-optimum guarantee; inspection efficiency has not been established against a baseline. Predictions and rankings depend on the initial split, k, observed neighbors, equal weights, and normalization policy. The historical split contains shared X combinations and is not evidence about exclusively novel vehicles. Missing X reduces comparability; uncertain physical interpretation of Acc+ remains. All remaining candidates are predicted each round, so computation is not restricted by the inspection budget. No random baseline, Fix, Spot, Race, other-domain adapter, treatment harness, or independent experimental repetition is included.
+
+Step 7 validation: **123 tests pass, 0 fail**, including 21 new Choose tests. All seven demos execute successfully; the six previous outputs match their pre-change SHA-256 hashes, and repeated Choose output is identical. No implementation bugs or test failures surfaced during validation. Raw datasets, frozen documentation, HEAD, project branches, and milestone tags remain unchanged.
+
 ## Reproducibility and disclosure
 
 Development proceeds incrementally to preserve accurate code-history measurements. Review each working milestone before manually committing and tagging it; this implementation does not create commits, tags, or pushes. Raw datasets, frozen requirements, and hypotheses remain unchanged.
 
-The Step 1 through Step 6 code, tests, and README changes were generated with LLM assistance. This development session is not an independent experimental trial and must not be labeled as human-written treatment code. No LOC measurements, treatment comparisons, or success claims about the research hypotheses are supplied here.
+The Step 1 through Step 7 code, tests, and README changes were generated with LLM assistance. This development session is not an independent experimental trial and must not be labeled as human-written treatment code. No LOC measurements, treatment comparisons, or success claims about the research hypotheses are supplied here.
 
 Course references: [project specification](https://github.com/txt/seai26f/blob/main/docs/submit/uproj.md) and [graduate scope](https://github.com/txt/seai26f/blob/main/docs/submit/gproj.md).
