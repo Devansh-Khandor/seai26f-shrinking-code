@@ -121,3 +121,21 @@ class Explainer:
                     if pair.favors_a and pair.favors_b:
                         return pair
         return None
+
+
+@dataclass(frozen=True)
+class PredictionExplanation:
+    query: Row
+    target: str
+    prediction: object
+    neighbor_distances: tuple
+
+
+def explain_prediction(model, query, target):
+    """Explain the existing kNN mean using actual training neighbors, X only."""
+    if len(query.cells) != len(model.training.columns) or any(
+            query.cells[c.index] is not None for c in model.training.columns if c.role != 'x'):
+        raise ValueError('Prediction explanation requires a masked X-only query')
+    prediction = model.predict(query, target)
+    return PredictionExplanation(query, target, prediction,
+                                 tuple(model.distance(query, r) for r in prediction.neighbors))

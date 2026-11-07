@@ -1,0 +1,86 @@
+{
+  "baseline": "2d734874a59cacbcc2e91d4ca486546f8ec275aa",
+  "target": "WORKTREE (provisional)",
+  "files": [
+    {
+      "path": "shrinking_code/hypotheticals.py",
+      "category": "new_domain_independent",
+      "added": 71,
+      "removed": 0,
+      "total": 71,
+      "sha256": "48e5a37da46d8a78c5a8378c45a31e5c629015008aca5c1245c887cf8c9fc73c"
+    },
+    {
+      "path": "shrinking_code/explanation.py",
+      "category": "shared_explanation_additions",
+      "added": 14,
+      "removed": 0,
+      "total": 119,
+      "sha256": "0b330481ba05e414b653d7830417b48ba8cd3424cd8253d7911a1ce53211c186"
+    },
+    {
+      "path": "tests/test_nasa_batch_b.py",
+      "category": "nasa_tests",
+      "added": 145,
+      "removed": 0,
+      "total": 145,
+      "sha256": "dfa03b483f42d00271e2ca6db7a3be286a7cb4f9ed981672a2e09c6f0e077245"
+    },
+    {
+      "path": "shrinking_code/proposals.py",
+      "category": "new_shared",
+      "added": 50,
+      "removed": 0,
+      "total": 50,
+      "sha256": "9e5023463aec80ca7459b2712ca32f86a0184b7e0147f4f1f7754857a004f48e"
+    },
+    {
+      "path": "shrinking_code/nasa.py",
+      "category": "nasa_adapter",
+      "added": 269,
+      "removed": 0,
+      "total": 269,
+      "sha256": "cfcf1d1f5fddcacc671f5fe3a336149f010f8452eb149f67a49dd46ef40e5e2a"
+    },
+    {
+      "path": "shrinking_code/demo.py",
+      "category": "modified_shared",
+      "added": 6,
+      "removed": 1,
+      "total": 440,
+      "sha256": "2adba0692301e73c970d1271e2bc6202da8a6491f78e5c448c76142ba19ec2fa"
+    },
+    {
+      "path": "tests/test_nasa.py",
+      "category": "nasa_tests",
+      "added": 183,
+      "removed": 0,
+      "total": 183,
+      "sha256": "b1a8878a504a4df68b99e07d010835aff2fcd57d4195ee7306f215a13d12df05"
+    },
+    {
+      "path": "tests/test_remember.py",
+      "category": "test_integration",
+      "added": 1,
+      "removed": 1,
+      "total": 102,
+      "sha256": "cf4e975ac1c9eceb950f2fd8fcc0a4255019ffde7806a254b2e32bf85b05789a"
+    },
+    {
+      "path": "README.md",
+      "category": "documentation",
+      "added": 54,
+      "removed": 2,
+      "total": 263,
+      "sha256": "2c7bce00a2c15d22cba9d6f8aaf549ae8ad87773087b857b2fd32b97be39e28f"
+    },
+    {
+      "path": "experiments/measure_transfer.py",
+      "category": "measurement_infrastructure",
+      "added": 94,
+      "removed": 0,
+      "total": 94,
+      "sha256": "216d6d09515c14e9a78dce6df81f8f2916085c0e861bfbfe119ce98b95d074ca"
+    }
+  ]
+}

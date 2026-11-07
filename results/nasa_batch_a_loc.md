@@ -1,9 +1,10 @@
-# NASA Batch A transfer LOC
+# NASA batch a transfer LOC
 
-Baseline: `2d734874a59cacbcc2e91d4ca486546f8ec275aa` (step10). Target: **WORKTREE (provisional)**.
+Baseline: `2d734874a59cacbcc2e91d4ca486546f8ec275aa`. Target: **fd68b8986204150dc7d86bb0a6167653e2e24d7b**.
 
 | File | Category | Added | Removed | Total |
 |---|---|---:|---:|---:|
+| shrinking_code/explanation.py | shared_explanation_additions | 0 | 0 | 105 |
 | shrinking_code/proposals.py | new_shared | 50 | 0 | 50 |
 | shrinking_code/nasa.py | nasa_adapter | 124 | 0 | 124 |
 | shrinking_code/demo.py | modified_shared | 6 | 1 | 440 |
@@ -12,8 +13,10 @@ Baseline: `2d734874a59cacbcc2e91d4ca486546f8ec275aa` (step10). Target: **WORKTRE
 | README.md | documentation | 26 | 2 | 235 |
 | experiments/measure_transfer.py | measurement_infrastructure | 81 | 0 | 81 |
 
-Counts reuse the Cars nonblank/noncomment policy (including docstrings). Python uses tokenization; documentation counts nonblank text. Added and removed are separate, not net LOC. Modified shared LOC means additions/removals in existing shared dispatch; it is not counted as a new shared algorithm.
+Implementation additions: 180; removals: 1.
 
-Scope is explicitly the Batch A files listed above. Existing unchanged shared modules contribute zero additions, not zero reused code. NASA adapter lines include policies and presentation and count as implementation; no duplicated algorithm is discounted as reuse. Generated results and pre-existing Cars measurement infrastructure are excluded. File hashes in the JSON identify measured bytes.
+Batch A is finalized from the accepted nasa-batch-a Git checkpoint. Batch B is relative to that checkpoint; cumulative transfer is relative to step10. WORKTREE targets are provisional, never labeled finalized. Use --revision <accepted-commit> to finalize Batch B and cumulative reports after acceptance.
 
-Default results are provisional working-tree Git diffs against step10, including new untracked files. Finalize after acceptance with `python3 experiments/measure_transfer.py --revision <accepted-commit>`, which reads Git blobs only. Renames within this explicitly named batch scope are treated as deletion/addition; edits/moves are not mechanically distinguishable from new logic. This is one development sequence, not an independent treatment repetition or evidence for H1/H2. Cars LOC artifacts are not changed.
+Counts reuse the Cars nonblank/noncomment policy including docstrings. Python uses tokenization; documentation counts nonblank lines. Added/removed are separate. Shared additions in existing files and new generic capabilities are distinguished from NASA adapter and dispatch. Existing-file additions include edits, not necessarily new logic; block moves/renames can count as additions. Endpoint cumulative counts need not equal the sum of batch additions because edits can replace earlier additions.
+
+The explicit scope includes all NASA implementation, tests, README, and transfer measurement source; unchanged shared modules add zero LOC, not zero reuse. Regression JSON fixtures and generated reports are excluded artifacts, not Python LOC. Content hashes identify measured bytes. New untracked scope files are included provisionally. Cars LOC outputs remain unchanged. This is development-history measurement, not an independent treatment experiment.

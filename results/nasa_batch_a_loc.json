@@ -1,7 +1,15 @@
 {
   "baseline": "2d734874a59cacbcc2e91d4ca486546f8ec275aa",
-  "target": "WORKTREE (provisional)",
+  "target": "fd68b8986204150dc7d86bb0a6167653e2e24d7b",
   "files": [
+    {
+      "path": "shrinking_code/explanation.py",
+      "category": "shared_explanation_additions",
+      "added": 0,
+      "removed": 0,
+      "total": 105,
+      "sha256": "f39e4c878d68b4deba01f4a7eed97f7cdb5d20c3f2db03d00b9f069b3cb67009"
+    },
     {
       "path": "shrinking_code/proposals.py",
       "category": "new_shared",

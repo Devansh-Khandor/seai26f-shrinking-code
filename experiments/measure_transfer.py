@@ -1,4 +1,4 @@
-"""NASA Batch A transfer cost against step10; working tree provisional by default."""
+"""NASA transfer costs: accepted Batch A, provisional Batch B, and cumulative."""
 
 import argparse
 import hashlib
@@ -13,6 +13,9 @@ except ImportError:
     from measure_loc import Git, source_lines, diff_indices
 
 SCOPE = {
+    'shrinking_code/hypotheticals.py': 'new_domain_independent',
+    'shrinking_code/explanation.py': 'shared_explanation_additions',
+    'tests/test_nasa_batch_b.py': 'nasa_tests',
     'shrinking_code/proposals.py': 'new_shared',
     'shrinking_code/nasa.py': 'nasa_adapter',
     'shrinking_code/demo.py': 'modified_shared',
@@ -31,9 +34,9 @@ def blob(git, revision, path):
     return oid, git.run('cat-file','blob',oid)
 
 
-def measure_transfer(repo, revision=None):
+def measure_transfer(repo, revision=None, base_ref='step10'):
     git = Git(repo)
-    base = git.text('rev-parse','refs/tags/step10^{commit}')
+    base = git.text('rev-parse',base_ref+'^{commit}')
     target = git.text('rev-parse', revision+'^{commit}') if revision else None
     if target:
         git.run('merge-base','--is-ancestor',base,target)
@@ -68,24 +71,36 @@ def measure_transfer(repo, revision=None):
     return dict(baseline=base,target=target or 'WORKTREE (provisional)',files=records)
 
 
-def main():
-    parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--revision',help='Accepted commit for finalized measurements; omit for working tree')
-    args=parser.parse_args()
-    repo=Path(__file__).resolve().parents[1]
-    result=measure_transfer(repo,args.revision)
+def write_report(repo, result, label):
     out=repo/'results'
     out.mkdir(exist_ok=True)
-    (out/'nasa_batch_a_loc.json').write_text(json.dumps(result,indent=2)+'\n')
-    lines=['# NASA Batch A transfer LOC','',f"Baseline: `{result['baseline']}` (step10). Target: **{result['target']}**.",'',
+    stem='nasa_'+label+'_loc'
+    (out/(stem+'.json')).write_text(json.dumps(result,indent=2)+'\n')
+    lines=['# NASA '+label.replace('_',' ')+' transfer LOC','',
+           f"Baseline: `{result['baseline']}`. Target: **{result['target']}**.",'',
            '| File | Category | Added | Removed | Total |','|---|---|---:|---:|---:|']
     for r in result['files']:
         lines.append(f"| {r['path']} | {r['category']} | {r['added']} | {r['removed']} | {r['total']} |")
-    lines += ['', 'Counts reuse the Cars nonblank/noncomment policy (including docstrings). Python uses tokenization; documentation counts nonblank text. Added and removed are separate, not net LOC. Modified shared LOC means additions/removals in existing shared dispatch; it is not counted as a new shared algorithm.', '',
-              'Scope is explicitly the Batch A files listed above. Existing unchanged shared modules contribute zero additions, not zero reused code. NASA adapter lines include policies and presentation and count as implementation; no duplicated algorithm is discounted as reuse. Generated results and pre-existing Cars measurement infrastructure are excluded. File hashes in the JSON identify measured bytes.', '',
-              'Default results are provisional working-tree Git diffs against step10, including new untracked files. Finalize after acceptance with `python3 experiments/measure_transfer.py --revision <accepted-commit>`, which reads Git blobs only. Renames within this explicitly named batch scope are treated as deletion/addition; edits/moves are not mechanically distinguishable from new logic. This is one development sequence, not an independent treatment repetition or evidence for H1/H2. Cars LOC artifacts are not changed.']
-    (out/'nasa_batch_a_loc.md').write_text('\n'.join(lines)+'\n')
-    print(json.dumps(result,indent=2))
+    impl=[r for r in result['files'] if r['path'].startswith('shrinking_code/')]
+    lines += ['',f"Implementation additions: {sum(r['added'] for r in impl)}; removals: {sum(r['removed'] for r in impl)}.",'',
+              'Batch A is finalized from the accepted nasa-batch-a Git checkpoint. Batch B is relative to that checkpoint; cumulative transfer is relative to step10. WORKTREE targets are provisional, never labeled finalized. Use --revision <accepted-commit> to finalize Batch B and cumulative reports after acceptance.', '',
+              'Counts reuse the Cars nonblank/noncomment policy including docstrings. Python uses tokenization; documentation counts nonblank lines. Added/removed are separate. Shared additions in existing files and new generic capabilities are distinguished from NASA adapter and dispatch. Existing-file additions include edits, not necessarily new logic; block moves/renames can count as additions. Endpoint cumulative counts need not equal the sum of batch additions because edits can replace earlier additions.', '',
+              'The explicit scope includes all NASA implementation, tests, README, and transfer measurement source; unchanged shared modules add zero LOC, not zero reuse. Regression JSON fixtures and generated reports are excluded artifacts, not Python LOC. Content hashes identify measured bytes. New untracked scope files are included provisionally. Cars LOC outputs remain unchanged. This is development-history measurement, not an independent treatment experiment.']
+    (out/(stem+'.md')).write_text('\n'.join(lines)+'\n')
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--revision',help='Accepted Batch B commit; omit for provisional working tree')
+    args=parser.parse_args()
+    repo=Path(__file__).resolve().parents[1]
+    git=Git(repo)
+    accepted=git.text('rev-parse','refs/tags/nasa-batch-a^{commit}')
+    for label,revision,base in [('batch_a',accepted,'step10'),('batch_b',args.revision,'nasa-batch-a'),
+                                ('cumulative',args.revision,'step10')]:
+        result=measure_transfer(repo,revision,base)
+        write_report(repo,result,label)
+        print(label, result['target'])
 
 
 if __name__=='__main__':

@@ -164,11 +164,11 @@ class NasaBlameTests(unittest.TestCase):
 
 
 class NasaIntegrationTests(unittest.TestCase):
-    def test_five_commands_and_rejection_of_later_skills(self):
+    def test_five_commands_and_rejection_of_unknown_skills(self):
         for skill in ['remember','guess','certify','flow','blame']:
             out=subprocess.check_output([sys.executable,'-m','shrinking_code.demo','--domain','nasa','--skill',skill],cwd=ROOT,text=True)
             self.assertIn('NASA /',out)
-        for skill in ['justify','choose','fix','spot','race']:
+        for skill in ['unknown']:
             result=subprocess.run([sys.executable,'-m','shrinking_code.demo','--domain','nasa','--skill',skill],cwd=ROOT,capture_output=True)
             self.assertEqual(result.returncode,2)
 
