@@ -88,12 +88,13 @@ def write_report(repo, result, label, domain='nasa'):
               'The explicit scope includes all NASA implementation, tests, README, and transfer measurement source; unchanged shared modules add zero LOC, not zero reuse. Regression JSON fixtures and generated reports are excluded artifacts, not Python LOC. Content hashes identify measured bytes. New untracked scope files are included provisionally. Cars LOC outputs remain unchanged. This is development-history measurement, not an independent treatment experiment.']
     if domain=='apache':
         lines=lines[:lines.index('Batch A is finalized from the accepted nasa-batch-a Git checkpoint. Batch B is relative to that checkpoint; cumulative transfer is relative to step10. WORKTREE targets are provisional, never labeled finalized. Use --revision <accepted-commit> to finalize Batch B and cumulative reports after acceptance.')]+[
-            'Baseline is the committed nasa-complete tag. WORKTREE is provisional; --revision <accepted-commit> reads only committed blobs. Git diffs count nonblank/noncomment Python lines including docstrings; documentation counts nonblank lines. Added/removed counts are separate, not net growth. Shared additions, Apache adapter, dispatch edits, tests, documentation and infrastructure are separated. Hashes identify measured bytes. Generated reports and regression JSON fixtures are excluded. Renames/moves/edits may be counted as additions; these counts do not establish new functionality or independent experimental repetitions. Existing Cars/NASA LOC reports are not rewritten by --domain apache.']
+            'Batch B baseline is committed apache-batch-a; cumulative (and explicit --batch a) baseline is committed nasa-complete. Default Apache invocation writes B and cumulative only, preserving Batch A artifacts. WORKTREE is provisional; --revision <accepted-commit> reads only committed blobs. Git diffs count nonblank/noncomment Python lines including docstrings; documentation counts nonblank lines. Added/removed counts are separate, not net growth. Shared additions, Apache adapter, dispatch edits, tests, documentation and infrastructure are separated. Hashes identify measured bytes. Generated reports and regression JSON fixtures are excluded. Renames/moves/edits may be counted as additions; these counts do not establish new functionality or independent experimental repetitions. Existing Cars/NASA LOC reports are not rewritten by --domain apache.']
     (out/(stem+'.md')).write_text('\n'.join(lines)+'\n')
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--batch',choices=('a','b','cumulative','all'),default='all')
     parser.add_argument('--domain',choices=('nasa','apache'),default='nasa')
     parser.add_argument('--revision',help='Accepted Batch B commit; omit for provisional working tree')
     args=parser.parse_args()
@@ -101,6 +102,8 @@ def main():
     git=Git(repo)
     if args.domain=='apache':
         scope={
+            'shrinking_code/alternatives.py':'shared_additions',
+            'tests/test_apache_batch_b.py':'apache_tests',
             'shrinking_code/diagnosis.py':'shared_additions',
             'shrinking_code/apache.py':'apache_adapter',
             'shrinking_code/demo.py':'shared_dispatch',
@@ -109,9 +112,14 @@ def main():
             'README.md':'documentation',
             'experiments/measure_transfer.py':'measurement_infrastructure',
         }
-        result=measure_transfer(repo,args.revision,'refs/tags/nasa-complete',scope)
-        write_report(repo,result,'batch_a','apache')
-        print('apache_batch_a',result['baseline'],result['target'])
+        jobs={'a':('batch_a','refs/tags/nasa-complete'),
+              'b':('batch_b','refs/tags/apache-batch-a'),
+              'cumulative':('cumulative','refs/tags/nasa-complete')}
+        for key in (('b','cumulative') if args.batch=='all' else (args.batch,)):
+            label,base=jobs[key]
+            result=measure_transfer(repo,args.revision,base,scope)
+            write_report(repo,result,label,'apache')
+            print(label,result['baseline'],result['target'])
         return
     accepted=git.text('rev-parse','refs/tags/nasa-batch-a^{commit}')
     for label,revision,base in [('batch_a',accepted,'step10'),('batch_b',args.revision,'nasa-batch-a'),

@@ -124,3 +124,53 @@ class Alternatives:
                 results.append(Alternative(pair, changed, unknown, distance, before, after, key,
                                            'changed X count, X distance, descending target count, d2h, original row ID'))
         return min(results, key=lambda r: r.ranking_key) if results else None
+
+
+@dataclass(frozen=True)
+class PredictedAlternative:
+    source: object
+    alternative: object
+    source_prediction: object
+    prediction: object
+    changed: tuple
+    distance: float
+
+    @property
+    def improvement(self):
+        return self.source_prediction.value - self.prediction.value
+
+
+def predicted_alternatives(training, visible, source_number, target):
+    """Predict existing masked candidate rows using one disjoint fixed reference.
+
+    No synthesis or outcome-based sorting. Pairs with unknown X are excluded;
+    consumers select by predicted improvement or a prespecified target.
+    """
+    from .prediction import KNNRegressor
+    if training.columns != visible.columns:
+        raise ValueError('Candidate and reference schemas must match')
+    ids = [r.number for r in visible.rows]
+    if len(set(ids)) != len(ids) or set(ids) & {r.number for r in training.rows}:
+        raise ValueError('Candidate IDs must be unique and disjoint from training')
+    for r in visible.rows:
+        if len(r.cells) != len(visible.columns) or any(r.cells[c.index] is not None for c in visible.columns if c.role != 'x'):
+            raise ValueError('Candidate rows must expose only X')
+    source = next((r for r in visible.rows if r.number == source_number), None)
+    if source is None:
+        raise ValueError('Source must belong to the candidate pool')
+    model = KNNRegressor.fit(training)
+    if model.target_column(target).ideal != 0:
+        raise ValueError('Predicted improvement currently requires a minimizing target')
+    original = model.predict(source, target)
+    results = []
+    for row in visible.rows:
+        if row.number == source_number:
+            continue
+        if any(source.cells[c.index] is None or row.cells[c.index] is None for c in visible.role('x')):
+            continue
+        changes = tuple(CharacteristicChange(c.name, source.cells[c.index], row.cells[c.index])
+                        for c in visible.role('x') if source.cells[c.index] != row.cells[c.index])
+        distance = model.distance(source, row)
+        if isfinite(distance):
+            results.append(PredictedAlternative(source, row, original, model.predict(row, target), changes, distance))
+    return tuple(results)

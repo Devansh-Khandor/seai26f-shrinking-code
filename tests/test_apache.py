@@ -155,7 +155,7 @@ class ApacheTests(unittest.TestCase):
         for skill in ['remember','guess','certify','flow','blame']:
             out=subprocess.check_output([sys.executable,'-m','shrinking_code.demo','--domain','apache','--skill',skill],cwd=ROOT,text=True)
             self.assertIn('APACHE-',out)
-        for skill in ['justify','choose','fix','spot','race']:
+        for skill in ['unknown']:
             result=subprocess.run([sys.executable,'-m','shrinking_code.demo','--domain','apache','--skill',skill],cwd=ROOT,capture_output=True)
             self.assertEqual(result.returncode,2)
         fixture=json.loads((ROOT/'tests/fixtures/pre_apache_demo_hashes.json').read_text())

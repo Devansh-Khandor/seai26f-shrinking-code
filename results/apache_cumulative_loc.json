@@ -1,0 +1,78 @@
+{
+  "baseline": "41e9c47a3919984d5cb0715729054e00752d66ad",
+  "target": "WORKTREE (provisional)",
+  "files": [
+    {
+      "path": "shrinking_code/alternatives.py",
+      "category": "shared_additions",
+      "added": 44,
+      "removed": 0,
+      "total": 150,
+      "sha256": "9cc0f420f17751c6bceeb3f206163b66cc5e018a5c7c440365ee00a1b69d2fa6"
+    },
+    {
+      "path": "tests/test_apache_batch_b.py",
+      "category": "apache_tests",
+      "added": 127,
+      "removed": 0,
+      "total": 127,
+      "sha256": "92b18d65699998f9f41ddf6d19263ba06e87b2f1a752bba8862e59180c91e27f"
+    },
+    {
+      "path": "shrinking_code/diagnosis.py",
+      "category": "shared_additions",
+      "added": 16,
+      "removed": 0,
+      "total": 125,
+      "sha256": "65c095658eab2d9b147931ad15ffa3f161ccf3fa37bd7646489e751989c36be8"
+    },
+    {
+      "path": "shrinking_code/apache.py",
+      "category": "apache_adapter",
+      "added": 291,
+      "removed": 0,
+      "total": 291,
+      "sha256": "c3b28c21609f2c31fb5616fcdade2261731515303607d1057390fdca44933c80"
+    },
+    {
+      "path": "shrinking_code/demo.py",
+      "category": "shared_dispatch",
+      "added": 6,
+      "removed": 1,
+      "total": 445,
+      "sha256": "3a367b5b8763635c228492ca79f6554716d552b6440b2a07a538e5726743e200"
+    },
+    {
+      "path": "tests/test_apache.py",
+      "category": "apache_tests",
+      "added": 148,
+      "removed": 0,
+      "total": 148,
+      "sha256": "c66ea52d1aa6b0debc387c1d5ba0e2ef0fa43fc42b5f6b741ea83c197b8ad87c"
+    },
+    {
+      "path": "tests/test_remember.py",
+      "category": "test_integration",
+      "added": 1,
+      "removed": 1,
+      "total": 102,
+      "sha256": "2c43610b4559a96928de88f68510f5957cb14507b2fc6c2a00cb09d8e8d583a5"
+    },
+    {
+      "path": "README.md",
+      "category": "documentation",
+      "added": 58,
+      "removed": 2,
+      "total": 319,
+      "sha256": "2677703eba5c61eb4e59b1482cb989bcc8f74eff786bef3ee564aa2a6f9e93fc"
+    },
+    {
+      "path": "experiments/measure_transfer.py",
+      "category": "measurement_infrastructure",
+      "added": 31,
+      "removed": 5,
+      "total": 120,
+      "sha256": "474f4622fbd81bde23172b67252ac697654e9c63cbde5307e8b1334cbe7e962e"
+    }
+  ]
+}

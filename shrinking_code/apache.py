@@ -178,3 +178,150 @@ def blame(table):
               f'proportions={c.poor_proportion:.6f}/{c.favorable_proportion:.6f}; difference={difference:.6f}')
     print('Fixed floor(n/4) extremes, ties by original ID. Overlapping pair counts are not independent; '
           'no interaction significance or causal explanation of an individual configuration is established.')
+
+
+def justify(table):
+    print('Apache / Justify — APACHE-11 and APACHE-12')
+    e=Explainer(table)
+    if not e.ranked:
+        print('No complete historical record to recommend.'); return
+    source=e.explain(e.ranked[0][0].number)
+    print(f'APACHE-11 row={source.row.number} performance={source.goals[0].raw} d2h={source.score:.9f} '
+          f'X={tuple((c.name,source.row.cells[c.index]) for c in table.role("x"))}')
+    g=source.goals[0]
+    print(f'Score explanation: {g.direction}; bounds={g.minimum}..{g.maximum}; normalized={g.normalized}; '
+          f'ideal={g.ideal}; squared contribution={g.squared}. Lower recorded performance means lower d2h.')
+    for neighbor in e.neighbors(source.row.number):
+        row=neighbor.explanation.row
+        print(f'neighbor={row.number} distance={neighbor.distance:.9f} observed={neighbor.explanation.goals[0].raw} '
+              f'differences={tuple((c.name,source.row.cells[c.index],row.cells[c.index]) for c in table.role("x") if source.row.cells[c.index]!=row.cells[c.index])}')
+    result=pair_estimate(table)
+    if result is None:
+        print('APACHE-12: no observed one-setting pair with a remaining reference.'); return
+    a,b,setting,p,q,n=result
+    goal=next(c for c in table.role('y') if c.name==TARGET)
+    predicted=q.value-p.value; actual=b.cells[goal.index]-a.cells[goal.index]
+    print(f'APACHE-12 observed pair={a.number},{b.number}; only difference={setting}; reference={n} excludes both queries')
+    print(f'Predictions={p.value},{q.value}; recorded={a.cells[goal.index]},{b.cells[goal.index]}; '
+          f'second-minus-first predicted={predicted:+g} observed={actual:+g}; opposite_signs={predicted*actual<0}')
+    print(f'Descriptive difference envelope={q.minimum-p.maximum}..{q.maximum-p.minimum}; '
+          f'neighbor_stddev={p.stddev:.9f}/{q.stddev:.9f}')
+    print('X similarity is not outcome desirability. Observed differences are not causal setting effects '
+          'or feature attributions; the envelope is not a calibrated prediction interval.')
+
+
+def choose(table):
+    from .selection import HistoricalOracle,select_candidates
+    training,hidden=train_test_split(table)
+    oracle=HistoricalOracle(hidden,20)
+    result=select_candidates(training,oracle.visible,oracle.inspect,20)
+    goal=table.role('y')[0]
+    print('Apache / Choose — APACHE-13 and APACHE-14')
+    print(f'training={len(training.rows)} candidates={len(hidden.rows)}; seed=42; k=5; fixed training scoring bounds')
+    for d in result.inspections:
+        print(f'APACHE-13 inspected={d.row.number} predicted_performance={d.predicted_goals[0]:.9f} '
+              f'recorded_after_inspection={d.row.cells[goal.index]}')
+    for budget in (5,10,20):
+        state=result.checkpoint(budget)
+        predictions=sum(len(hidden.rows)-i for i in range(budget))
+        print(f'APACHE-14 budget={budget} distinct_inspections={budget} best_row={state.best_row.number} '
+              f'best_performance={state.best_row.cells[goal.index]} d2h={state.best_score:.9f} predictions={predictions}')
+    print(f'Total inspections={len(oracle.inspected)}; per-goal predictions={result.prediction_count}. '
+          'Offline observed-candidate simulation; no global optimality claim.')
+
+
+def fix_results(table):
+    from .alternatives import predicted_alternatives
+    from .selection import HistoricalOracle
+    training,heldout=train_test_split(table)
+    goal=next(c for c in table.role('y') if c.name==TARGET)
+    threshold=summarize(table,goal).median
+    poor=[r for r in heldout.rows if r.cells[goal.index] is not None and r.cells[goal.index]>threshold]
+    if not poor: return None
+    source=min(poor,key=lambda r:(-r.cells[goal.index],r.number))
+    visible=HistoricalOracle(heldout,0).visible
+    options=predicted_alternatives(training,visible,source.number,TARGET)
+    single=tuple(sorted((r for r in options if len(r.changed)==1 and r.improvement>0),
+                        key=lambda r:(-r.improvement,r.alternative.number)))
+    meeting=tuple(sorted((r for r in options if r.prediction.value<=threshold),
+                         key=lambda r:(len(r.changed),r.distance,r.prediction.value,r.alternative.number)))
+    return source,threshold,single,meeting
+
+
+def fix(table):
+    print('Apache / Fix — APACHE-15 and APACHE-16')
+    print('Fixed seed-42 reference: 153 historical training records; queries restricted to the 39 '
+          'observed held-out configurations, all excluded from prediction reference. No synthesis.')
+    result=fix_results(table)
+    if result is None:
+        print('No held-out observed source failing the historical median target.'); return
+    source,threshold,single,meeting=result
+    goal=next(c for c in table.role('y') if c.name==TARGET)
+    rows={r.number:r for r in table.rows}
+    print(f'Source={source.number}; retrospectively poor observed={source.cells[goal.index]}; '
+          f'APACHE-16 prespecified historical-median target <= {threshold}')
+    for requirement,options in [('APACHE-15',single),('APACHE-16',meeting[:1])]:
+        if not options:
+            print(f'{requirement}: no qualifying solution; no fallback presented.'); continue
+        for r in options:
+            print(f'{requirement} alternative={r.alternative.number} changes={tuple((c.name,c.before,c.after) for c in r.changed)} '
+                  f'count={len(r.changed)} distance={r.distance:.9f} '
+                  f'source_prediction={r.source_prediction.value:.9f} alternative_prediction={r.prediction.value:.9f} '
+                  f'predicted_improvement={r.improvement:.9f} meets_target={r.prediction.value<=threshold}')
+            print(f'  neighbor_ranges={r.source_prediction.minimum}..{r.source_prediction.maximum} / '
+                  f'{r.prediction.minimum}..{r.prediction.maximum}; stddev={r.source_prediction.stddev:.9f}/{r.prediction.stddev:.9f}')
+            print(f'  Retrospective observations only: source={source.cells[goal.index]} alternative={rows[r.alternative.number].cells[goal.index]}')
+    print('Only historically observed pool members; base cannot differ. Predictions rank alternatives, '
+          'not their actual outcomes. Missing X pairs excluded. Counts are not deployment costs; '
+          'no safety, causal improvement, or calibrated uncertainty claim. Search is restricted to '
+          'the held-out candidate pool, not all 192 configurations.')
+
+
+def spot(table):
+    from .anomalies import input_isolation,outcome_residuals
+    training,test=train_test_split(table)
+    print('Apache / Spot — APACHE-17 and APACHE-18')
+    for r in outcome_residuals(training,test,TARGET):
+        if r.flagged:
+            print(f'APACHE-17 row={r.row.number} observed={r.actual} predicted={r.prediction.value:.9f} '
+                  f'signed={r.signed:+.9f} absolute={r.score:.9f} range={r.prediction.minimum}..{r.prediction.maximum} '
+                  f'stddev={r.prediction.stddev:.9f}')
+    goal=table.role('y')[0]; median=summarize(table,goal).median
+    favorable=0
+    isolation=input_isolation(table)
+    scores={r.score for r in isolation if r.score is not None}
+    print(f'Distinct scored X-isolation values: {len(scores)}')
+    if len(scores)==1: print('All scored records tie; flags are determined by row ID, not evidence of greater relative isolation.')
+    for r in isolation:
+        if r.flagged:
+            good=r.row.cells[goal.index]<=median
+            favorable+=good
+            print(f'APACHE-18 row={r.row.number} isolation={r.score:.9f} neighbors={r.neighbors} '
+                  f'separate_recorded_performance={r.row.cells[goal.index]} at_or_below_median={good}')
+    print(f'Flagged X-isolation records at or below historical median {median}: {favorable}/5. '
+          'Top-five review policy, not confirmed errors. Rarity does not imply poor performance; '
+          'the performance column is not used in isolation scoring.')
+
+
+def race(table):
+    from .baselines import selection_race,prediction_race
+    print('Apache / Race — APACHE-19 and APACHE-20')
+    result=selection_race(table,budgets=(5,10,20))
+    for c in result.checkpoints:
+        s=c.random_summary
+        wins=sum(t.inspections[c.budget-1].best_score<=c.model_score for t in result.random_trials)
+        print(f'APACHE-19 budget={c.budget} model_d2h={c.model_score:.9f} random_mean={s.mean:.9f} '
+              f'median={s.median:.9f} min={s.minimum:.9f} max={s.maximum:.9f} match_or_beat={wins}/30 '
+              f'inspections_per_run={c.budget} model_predictions={c.model_predictions} random_predictions=0')
+    for t in result.random_trials:
+        print(f'seed={t.seed} inspected={tuple(d.row.number for d in t.inspections)} '
+              f'checkpoints={tuple(t.inspections[b-1].best_score for b in (5,10,20))}')
+    training,test=train_test_split(table); p=prediction_race(training,test,TARGET)
+    print(f'APACHE-20 training={len(training.rows)} test={len(test.rows)} k=5 kNN_MAE={p.evaluation.mae:.9f} '
+          f'mean_MAE={p.evaluation.baseline_mae:.9f} percent_reduction={p.percentage_improvement:.9f} '
+          f'wins/losses/ties={p.wins}/{p.losses}/{p.ties} same={p.comparison.same} exceeded={p.comparison.exceeded}')
+    print('Paired errors (row, kNN, mean, kNN-minus-mean): '+str(tuple((r.number,r.knn_error,r.mean_error,r.difference) for r in p.pairs)))
+    print('One deterministic model trajectory; 30 seeds 0..29 on one fixed dataset, not independent '
+          'model repetitions. Course same is descriptive and does not account for paired errors; '
+          'no formal statistical superiority or equivalence claim. Customer methods, not independent '
+          'software-development treatments.')
