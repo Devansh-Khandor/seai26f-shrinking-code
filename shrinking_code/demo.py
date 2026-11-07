@@ -9,17 +9,18 @@ from .stats import NumericSummary, summarize
 from .certification import compare
 from .streaming import Inventory
 from .diagnosis import outcome_groups, compare_groups
+from .explanation import Explainer
 from .prediction import KNNRegressor
 from .evaluation import evaluate, train_test_split
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Cars / Remember, Guess, Certify, Flow and Blame')
+    parser = argparse.ArgumentParser(description='Cars / Remember, Guess, Certify, Flow, Blame and Justify')
     parser.add_argument('--domain', required=True)
     parser.add_argument('--skill', required=True)
     args = parser.parse_args(argv)
-    if args.domain != 'cars' or args.skill not in ('remember', 'guess', 'certify', 'flow', 'blame'):
-        parser.error('Unsupported domain or skill; only cars / remember, guess, certify, flow, and blame are implemented')
+    if args.domain != 'cars' or args.skill not in ('remember', 'guess', 'certify', 'flow', 'blame', 'justify'):
+        parser.error('Unsupported domain or skill; only cars / remember, guess, certify, flow, blame, and justify are implemented')
     path = Path(__file__).resolve().parents[1] / 'data/raw/auto93.csv'
     table = Table.load(path)
     if args.skill == 'guess':
@@ -33,6 +34,9 @@ def main(argv=None):
         return
     if args.skill == 'blame':
         blame(table)
+        return
+    if args.skill == 'justify':
+        justify(table)
         return
     print('Cars / Remember — CAR-01 and CAR-02')
     print(f'Records: {len(table.rows)}')
@@ -233,6 +237,67 @@ def blame(table):
           'Feature scores are descriptive, not significance tests; same=False can reflect an '
           'effect-size screen alone. Missing values and small counts limit evidence. '
           'd2h retains Step 1 full-table bounds and uncertain Acc+ meaning.')
+
+
+
+def print_score_explanation(explanation):
+    print(f'row={explanation.row.number}, rank={explanation.rank}, d2h={explanation.score:.9f}')
+    for goal in explanation.goals:
+        print(f'  {goal.name}: raw={goal.raw:g}, {goal.direction}, '
+              f'bounds={goal.minimum:g}..{goal.maximum:g}, normalized={goal.normalized:.9f}, '
+              f'ideal={goal.ideal}, squared={goal.squared:.9f}')
+    average = sum(g.squared for g in explanation.goals) / len(explanation.goals)
+    print(f'  mean squared contribution={average:.9f}; sqrt={average ** 0.5:.9f}')
+
+
+def justify(table):
+    explainer = Explainer(table)
+    print('Cars / Justify — CAR-11 and CAR-12')
+    print('Historical observed outcomes; all goal and X bounds use this inventory. '
+          'Similarity in X is separate from desirability in Y.')
+    if not explainer.ranked:
+        print('No complete-goal historical rows to recommend.')
+        return
+    selected = explainer.explain(explainer.ranked[0][0].number)
+    print('\nCAR-11: best-ranked historical vehicle')
+    print('Recorded fields: ' + ', '.join(f'{c.name}={selected.row.cells[c.index]}' for c in table.columns))
+    print_score_explanation(selected)
+    print('Three nearest X neighbors when available; ties rounded to 12 decimals, then row ID:')
+    neighbors = explainer.neighbors(selected.row.number)
+    if not neighbors:
+        print('No comparable X neighbors available.')
+    for neighbor in neighbors:
+        other = neighbor.explanation
+        pair = explainer.compare(selected.row.number, other.row.number)
+        values = ', '.join(f'{g.name}={g.raw}' for g in other.goals)
+        print(f'  row={other.row.number}, X-distance={neighbor.distance:.6f}, '
+              f'd2h={other.score}, {values}')
+        print(f'    selected wins: {pair.favors_a}; neighbor wins: {pair.favors_b}; '
+              f'equal: {pair.equal}; unknown: {pair.unknown}')
+    print('\nCAR-12: first tradeoff pair in nested historical ranking order')
+    pair = explainer.tradeoff_pair()
+    if pair is None:
+        print('No complete-goal pair with a strict score difference and wins on both sides.')
+    else:
+        print_score_explanation(pair.a)
+        print_score_explanation(pair.b)
+        print(f'Row {pair.a.row.number} wins: {pair.favors_a}; '
+              f'row {pair.b.row.number} wins: {pair.favors_b}; equal: {pair.equal}')
+        print(f'Row {pair.winner} ranks higher because its average squared distance from '
+              'the goal ideals is smaller; every goal has equal weight.')
+    if len(explainer.ranked) >= 4:
+        groups = outcome_groups(table)
+        context = next((f for f in compare_groups(groups.poor, groups.favorable)
+                        if f.column.numeric and f.separation is not None), None)
+        if context:
+            print(f'\nPopulation context only (Blame): {context.column.name}, '
+                  f'absolute Cliff delta={context.separation:.6f}; {context.direction}. '
+                  'This is not a cause or an individual feature attribution.')
+    print('A customer prioritizing a different goal could prefer another car; no weights '
+          'were changed here. Observed outcomes were not predicted. No claims about purchase '
+          'price, mechanical reliability, or faster physical acceleration; Acc+ meaning is '
+          'uncertain. Similarity with missing X can use fewer fields; incomplete goals remain '
+          'unranked. This explains a historical score, not a causal mechanism or held-out prediction.')
 
 
 if __name__ == '__main__':

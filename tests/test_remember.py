@@ -112,10 +112,10 @@ class RememberTests(unittest.TestCase):
             self.assertAlmostEqual(float(fields[-1]), score, places=6)
 
     def test_unsupported_cli_requests(self):
-        for domain, skill in [('nasa', 'remember'), ('apache', 'remember'), ('cars', 'justify')]:
+        for domain, skill in [('nasa', 'remember'), ('apache', 'remember'), ('cars', 'choose')]:
             result = subprocess.run([sys.executable, '-m', 'shrinking_code.demo',
                                      '--domain', domain, '--skill', skill],
                                     cwd=ROOT, capture_output=True, text=True)
             self.assertEqual(result.returncode, 2)
-            self.assertIn('only cars / remember, guess, certify, flow, and blame are implemented', result.stderr)
+            self.assertIn('only cars / remember, guess, certify, flow, blame, and justify are implemented', result.stderr)
             self.assertEqual(result.stdout, '')

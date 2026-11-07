@@ -8,9 +8,9 @@ The selected domains and original datasets are:
 - NASA / Software Engineering Project Manager: [nasa93dem.csv](data/raw/nasa93dem.csv).
 - Apache / Apache Web Server Administrator: [Apache_AllMeasurements.csv](data/raw/Apache_AllMeasurements.csv).
 
-## Current milestones: Remember, Guess, Certify, Flow, and Blame on Cars
+## Current milestones: Remember through Justify on Cars
 
-**Step 1 — Remember is complete:** CAR-01 (inventory goal summaries) and CAR-02 (ranking recorded multi-goal outcomes). **Step 2 — Guess is complete after validation:** CAR-03 (fuel-efficiency estimates) and CAR-04 (weight estimates with descriptive uncertainty). **Step 3 — Certify is complete after validation:** CAR-05 (cylinder-group MPG comparisons) and CAR-06 (fixed model-year-group performance comparisons). **Step 4 — Flow is complete after validation:** CAR-07 (arrival-time assessment) and CAR-08 (automatic inventory summary and shortlist updates). **Step 5 — Blame is complete after validation:** CAR-09 (poor-MPG group diagnosis) and CAR-10 (unfavorable overall-performance group diagnosis). The remaining five skills—Justify, Choose, Fix, Spot, and Race—and the NASA and Apache demonstrations are not yet implemented.
+**Step 1 — Remember is complete:** CAR-01 (inventory goal summaries) and CAR-02 (ranking recorded multi-goal outcomes). **Step 2 — Guess is complete after validation:** CAR-03 (fuel-efficiency estimates) and CAR-04 (weight estimates with descriptive uncertainty). **Step 3 — Certify is complete after validation:** CAR-05 (cylinder-group MPG comparisons) and CAR-06 (fixed model-year-group performance comparisons). **Step 4 — Flow is complete after validation:** CAR-07 (arrival-time assessment) and CAR-08 (automatic inventory summary and shortlist updates). **Step 5 — Blame is complete after validation:** CAR-09 (poor-MPG group diagnosis) and CAR-10 (unfavorable overall-performance group diagnosis). **Step 6 — Justify is complete after validation:** CAR-11 (recommendation comparisons) and CAR-12 (pairwise goal tradeoffs). The remaining four skills—Choose, Fix, Spot, and Race—and the NASA and Apache demonstrations are not yet implemented.
 
 From the repository root, using Python 3.8+ and only its standard library:
 
@@ -20,6 +20,7 @@ python3 -m shrinking_code.demo --domain cars --skill guess
 python3 -m shrinking_code.demo --domain cars --skill certify
 python3 -m shrinking_code.demo --domain cars --skill flow
 python3 -m shrinking_code.demo --domain cars --skill blame
+python3 -m shrinking_code.demo --domain cars --skill justify
 ```
 
 The Remember demo reads the actual CSV, reports record counts and column roles, summarizes all three goals, and shows the top five cars with their original data-row numbers, independent characteristics, recorded goals, and scores. Unsupported domains or skills produce an explicit error and a nonzero exit status.
@@ -43,7 +44,8 @@ Tests cover real data summaries and roles, categorical values, missing data, han
 - `shrinking_code/certification.py`: domain-independent numeric distribution comparison with sample summaries and diagnostic thresholds.
 - `shrinking_code/streaming.py`: validates and accepts sequential records, reusing existing summaries and ranking to maintain exact inventory state.
 - `shrinking_code/diagnosis.py`: fixed outcome-quartile selection and structured numeric/categorical X-only diagnostic evidence.
-- `shrinking_code/demo.py`: Cars Remember, Guess, Certify, Flow, and Blame demonstrations; domain configuration stays here.
+- `shrinking_code/explanation.py`: structured historical score contributions, X neighbors, and pairwise tradeoff evidence using existing ranking and distance.
+- `shrinking_code/demo.py`: Cars Remember through Justify demonstrations; domain configuration stays here.
 
 Uppercase initial letters denote numeric columns; lowercase initials denote symbolic columns. Goal suffixes `+` and `-` denote numeric goals to maximize and minimize. Suffix `X` excludes a column from inputs and goals while retaining its values for inspection. Remaining columns are inputs. Thus `origin` remains a string category and `HpX` is ignored. The six `?` horsepower entries load as `None`.
 
@@ -171,10 +173,32 @@ These show historical group associations, not individual causes, predictions, or
 
 Step 5 validation: **87 tests pass**. Independent raw-CSV calculations verified both group selections, means, medians, pairwise Cliff's deltas, and categorical TV scores. Pre-Blame hashes verify unchanged outputs for all four earlier demos. The previous core algorithms and frozen evaluation/streaming policies remain unchanged; only CLI dispatch/help and the unsupported-skill test were adapted. No unit-test failures or implementation errors surfaced during validation.
 
+## Justify: explain observed scores and tradeoffs
+
+`Explainer(reference_table)` uses existing `rank_rows()`, `summarize()`, and `XDistance.fit()` against one explicit historical inventory. `explain(row_number)` returns the recorded row, existing rank/score, and goal contributions: name, raw value, minimize/maximize direction, reference bounds, normalized value, ideal, and squared deviation from ideal. Averaging the squared deviations and taking the square root reconstructs d2h with unchanged equal weighting. These are contributions to a scoring formula, not causal feature attributions.
+
+Constants normalize to 0.5 and contribute 0.25, exactly as before. Missing goals have undefined normalized values/contributions; the overall score and rank remain `None`. Known values in incomplete rows still inform reference bounds. Unknown row IDs are rejected. This component explains only records in its declared historical reference; it does not explain held-out predictions or reveal unavailable outcomes.
+
+`neighbors(row_number, k=3)` selects up to three other rows by the existing mixed-type X distance fitted on that same reference. Goals and ignored fields do not influence similarity; numeric-coded categories remain categorical. Self is excluded by original row ID. As in Guess, distances rounded to 12 decimals determine ordering, then original row IDs break ties; displayed distances are unrounded internally. Missing X follows the existing pairwise omission policy; infinite-distance candidates are excluded. Neighbors with missing goals may be shown but remain unranked. Similarity in X is separate from desirability in Y.
+
+`compare(a, b)` reports goals favoring each record, equal goals, unknown comparisons, and the strict lower-d2h winner when both scores exist. Equal scores have no score winner even though the historical ranking uses IDs to order ties. `tradeoff_pair()` scans nested existing ranking order: first A from best to worst, then each later B. It returns the first pair with strictly lower d2h for A and at least one recorded goal favoring each side. Incomplete rows cannot qualify; if no pair exists, it returns `None` and the demo explicitly reports that. No pair, score, or narrative outcome is hardcoded.
+
+Actual CAR-11 result: **row 395**, d2h **0.167459891**, with Clndrs=4, Volume=97, Model=82, origin category=2, ignored HpX=52. Recorded goals are Lbs-=2130, Acc+=24.6, Mpg+=40. Squared contributions are respectively **0.021486722**, **0.000141723**, and **0.062500000**. Their average is **0.028042815**, whose square root gives the score (displayed figures rounded).
+
+The three nearest X neighbors are **368, 361, 347**, at distances **0.010336, 0.041847, 0.042930**. Row 368 is lighter (1980 versus 2130), has lower recorded Acc+ (15.3 versus 24.6), and equal MPG (40). Rows 361 and 347 have less favorable recorded values on all three goals under the header directions. These are measured historical values, not predictions.
+
+Actual CAR-12 pair: **395 versus 393**. Row 393 has goals 1985, 21.5, 40 and d2h **0.193398157**. Its squared contributions are **0.011124358**, **0.038584184**, **0.062500000**, averaging **0.037402847**. It wins Lbs-, while row 395 wins Acc+, and MPG ties. Row 395's smaller average squared deviation explains its better overall score. A customer who prioritizes weight could prefer row 393; the implementation does not alter weights or claim the default represents every customer's preferences.
+
+The demo reuses Blame's top numerical overall-group finding only as explicitly labeled population context. Cliff's delta is not an individual attribution or cause of the recommendation. No causal, purchase-price, mechanical-reliability, or faster-acceleration claims are made; `Acc+` remains physically uncertain.
+
+Limitations: explanations depend on reference bounds and the equal-weight policy, not statistical confidence. Sparse/missing X can weaken neighbor comparability. Tradeoff search may examine quadratically many pairs. The core is domain-independent for MOOT tables with numerical goals and stable unique row IDs; domain adapters still need to supply trustworthy meanings, units, and reference scope. No NASA or Apache demo, held-out-prediction explanation, or later skill is implemented.
+
+Step 6 validation: **102 tests pass**. Tests reconstruct every Cars score from contributions and cover constants, missing goals, common bounds, neighbors, tradeoffs, no-pair cases, and all five previous demo-output hashes. One initial synthetic-test failure was corrected: a column named `X` was correctly ignored by the existing MOOT suffix rule, so the intended input was renamed `Size`. Production conventions were unchanged. No earlier core refactoring was needed; only CLI dispatch/help and the unsupported-skill test were extended.
+
 ## Reproducibility and disclosure
 
 Development proceeds incrementally to preserve accurate code-history measurements. Review each working milestone before manually committing and tagging it; this implementation does not create commits, tags, or pushes. Raw datasets, frozen requirements, and hypotheses remain unchanged.
 
-The Step 1 through Step 5 code, tests, and README changes were generated with LLM assistance. This development session is not an independent experimental trial and must not be labeled as human-written treatment code. No LOC measurements, treatment comparisons, or success claims about the research hypotheses are supplied here.
+The Step 1 through Step 6 code, tests, and README changes were generated with LLM assistance. This development session is not an independent experimental trial and must not be labeled as human-written treatment code. No LOC measurements, treatment comparisons, or success claims about the research hypotheses are supplied here.
 
 Course references: [project specification](https://github.com/txt/seai26f/blob/main/docs/submit/uproj.md) and [graduate scope](https://github.com/txt/seai26f/blob/main/docs/submit/gproj.md).
