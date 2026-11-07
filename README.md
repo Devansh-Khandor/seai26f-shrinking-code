@@ -8,9 +8,9 @@ The selected domains and original datasets are:
 - NASA / Software Engineering Project Manager: [nasa93dem.csv](data/raw/nasa93dem.csv).
 - Apache / Apache Web Server Administrator: [Apache_AllMeasurements.csv](data/raw/Apache_AllMeasurements.csv).
 
-## Current milestones: Remember through Choose on Cars
+## Current milestones: Remember through Fix on Cars
 
-**Step 1 — Remember is complete:** CAR-01 (inventory goal summaries) and CAR-02 (ranking recorded multi-goal outcomes). **Step 2 — Guess is complete after validation:** CAR-03 (fuel-efficiency estimates) and CAR-04 (weight estimates with descriptive uncertainty). **Step 3 — Certify is complete after validation:** CAR-05 (cylinder-group MPG comparisons) and CAR-06 (fixed model-year-group performance comparisons). **Step 4 — Flow is complete after validation:** CAR-07 (arrival-time assessment) and CAR-08 (automatic inventory summary and shortlist updates). **Step 5 — Blame is complete after validation:** CAR-09 (poor-MPG group diagnosis) and CAR-10 (unfavorable overall-performance group diagnosis). **Step 6 — Justify is complete after validation:** CAR-11 (recommendation comparisons) and CAR-12 (pairwise goal tradeoffs). **Step 7 — Choose implements** CAR-13 (discover a promising car through limited inspections) and CAR-14 (prioritize inspections and report budget checkpoints). The remaining three skills—Fix, Spot, and Race—and the NASA and Apache demonstrations are not yet implemented.
+**Step 1 — Remember is complete:** CAR-01 (inventory goal summaries) and CAR-02 (ranking recorded multi-goal outcomes). **Step 2 — Guess is complete after validation:** CAR-03 (fuel-efficiency estimates) and CAR-04 (weight estimates with descriptive uncertainty). **Step 3 — Certify is complete after validation:** CAR-05 (cylinder-group MPG comparisons) and CAR-06 (fixed model-year-group performance comparisons). **Step 4 — Flow is complete after validation:** CAR-07 (arrival-time assessment) and CAR-08 (automatic inventory summary and shortlist updates). **Step 5 — Blame is complete after validation:** CAR-09 (poor-MPG group diagnosis) and CAR-10 (unfavorable overall-performance group diagnosis). **Step 6 — Justify is complete after validation:** CAR-11 (recommendation comparisons) and CAR-12 (pairwise goal tradeoffs). **Step 7 — Choose implements** CAR-13 (discover a promising car through limited inspections) and CAR-14 (prioritize inspections and report budget checkpoints). **Step 8 — Fix implements** CAR-15 (similar historical alternatives with better recorded outcomes) and CAR-16 (alternatives meeting more targets with fewer X differences). The remaining two skills—Spot and Race—and the NASA and Apache demonstrations are not yet implemented.
 
 From the repository root, using Python 3.8+ and only its standard library:
 
@@ -22,6 +22,7 @@ python3 -m shrinking_code.demo --domain cars --skill flow
 python3 -m shrinking_code.demo --domain cars --skill blame
 python3 -m shrinking_code.demo --domain cars --skill justify
 python3 -m shrinking_code.demo --domain cars --skill choose
+python3 -m shrinking_code.demo --domain cars --skill fix
 ```
 
 The Remember demo reads the actual CSV, reports record counts and column roles, summarizes all three goals, and shows the top five cars with their original data-row numbers, independent characteristics, recorded goals, and scores. Unsupported domains or skills produce an explicit error and a nonzero exit status.
@@ -47,7 +48,8 @@ Tests cover real data summaries and roles, categorical values, missing data, han
 - `shrinking_code/diagnosis.py`: fixed outcome-quartile selection and structured numeric/categorical X-only diagnostic evidence.
 - `shrinking_code/explanation.py`: structured historical score contributions, X neighbors, and pairwise tradeoff evidence using existing ranking and distance.
 - `shrinking_code/selection.py`: masked candidate oracle, sequential predicted-d2h selection, and inspection/checkpoint records.
-- `shrinking_code/demo.py`: Cars Remember through Choose demonstrations; domain configuration stays here.
+- `shrinking_code/alternatives.py`: observed-alternative searches, exact X differences, and direction-aware target satisfaction using existing explanations.
+- `shrinking_code/demo.py`: Cars Remember through Fix demonstrations; domain configuration stays here.
 
 Uppercase initial letters denote numeric columns; lowercase initials denote symbolic columns. Goal suffixes `+` and `-` denote numeric goals to maximize and minimize. Suffix `X` excludes a column from inputs and goals while retaining its values for inspection. Remaining columns are inputs. Thus `origin` remains a string category and `HpX` is ignored. The six `?` horsepower entries load as `None`.
 
@@ -226,10 +228,38 @@ Limitations: greedy selection has no exploration or global-optimum guarantee; in
 
 Step 7 validation: **123 tests pass, 0 fail**, including 21 new Choose tests. All seven demos execute successfully; the six previous outputs match their pre-change SHA-256 hashes, and repeated Choose output is identical. No implementation bugs or test failures surfaced during validation. Raw datasets, frozen documentation, HEAD, project branches, and milestone tags remain unchanged.
 
+## Fix: better existing historical alternatives
+
+For Cars, Fix means selecting another observed vehicle record. It does not synthesize a configuration, predict an invented outcome, or describe a feasible mechanical modification. CAR-15 and CAR-16 search the full historical inventory independently of Choose; the Step 7 oracle and selection policy are unchanged. Historical presence does not establish current commercial availability.
+
+`Alternatives(reference)` reuses Step 6's `Explainer`: existing `rank_rows()`, common full-reference goal summaries, mixed-type `XDistance`, and pairwise goal explanations. No d2h, distance, normalization, or goal-comparison algorithm is duplicated. Structured `Alternative` results carry the existing source/alternative explanations and row identities, observed goal comparisons, known changed X values, unknown X names, distance, optional target statuses, ordering key, and rationale. `improvement` is source minus alternative d2h; `pareto_dominates` requires at least one improved goal, no worsened goal, and no unknown comparison. CAR-15 has no target policy, so its target statuses are `None`.
+
+The demo source is the worst complete-goal historical record by existing d2h, breaking equal worst scores by **smallest original row ID**. `better(source, limit=5)` excludes self, incomplete-goal alternatives, and scores equal to or worse than the source. Results sort by **raw existing X distance, lower d2h, then row ID**. No new rounding tolerance is applied to distance ties. Both records use the same full-inventory normalization bounds and unchanged equal goal weights and constant midpoint semantics. Known goals in incomplete records still inform those common bounds.
+
+`target_status(row, columns, targets)` accepts a nonempty mapping of numerical goal names to finite thresholds (subsets are allowed). Minimize goals satisfy `value <= threshold`; maximize goals satisfy `value >= threshold`. It returns satisfied, failed, and unknown goal identities plus the satisfied count, in schema order. Missing outcomes are unknown, not satisfied or asserted to fail. Unknown columns, non-goals, booleans, and nonfinite thresholds are rejected. Cars targets are computed from full historical medians: **Lbs- <= 2803.5, Acc+ >= 15.5, Mpg+ >= 20**. This is a reproducible initial policy, not customer-specified thresholds.
+
+`meet_more(source, targets)` requires strictly more satisfied targets and sorts lexicographically by **fewest changed X fields, smallest raw X distance, highest satisfied-target count, lowest d2h, then original ID**. It returns the best structured alternative or `None` for no solution. It does not additionally require better d2h or Pareto dominance: more targets met can coexist with worse overall score. Both source and alternatives require complete goals because d2h participates in the comparison. An unknown source ID or incomplete source raises an explicit error; `worst()` returns `None` when no complete source exists.
+
+Only active X columns count as characteristics. Numerical changes use exact recorded inequality; categorical changes use category inequality, including numeric-looking category codes. Ignored fields never affect distance or change counts. No physical tolerance or modification-cost model is invented. For CAR-15, missing X follows existing pairwise distance omission, known changes are counted, and unknown differences are listed separately; no comparable X excludes the pair. For CAR-16, any unknown X difference excludes the pair, avoiding a falsely low change count. This conservative missing-data policy can produce no solution even when partially observed alternatives exist.
+
+Actual source: **row 15**, d2h **0.927451502**, with Clndrs=8, Volume=400, Model=71, origin=1, and goals Lbs-=5140, Acc+=12, Mpg+=10. CAR-15 alternatives in order:
+
+- **40:** d2h **0.871807071**, improvement **0.055644431**, X distance **0**, **0** changed X fields. Lbs- improves, Acc+ worsens, Mpg+ ties.
+- **14:** d2h **0.888736665**, improvement **0.038714837**, X distance **0**, **0** changed X fields. Lbs- improves; Acc+ and Mpg+ tie. Pareto-dominates the source.
+- **8:** d2h **0.917348054**, improvement **0.010103448**, X distance **0.021963824**, **1** changed field (Volume 400→383). Lbs- improves, Acc+ worsens, Mpg+ ties.
+- **58:** d2h **0.766550976**, improvement **0.160900526**, X distance **0.041666667**, **1** changed field (Model 71→70). Lbs- and Mpg+ improve; Acc+ worsens.
+- **18:** d2h **0.850554725**, improvement **0.076896777**, X distance **0.041666667**, **1** changed field (Model 71→72). Lbs- and Acc+ improve; Mpg+ ties. Pareto-dominates the source.
+
+CAR-16 recommends **row 58**: the target count rises from **0/3 to 1/3**, satisfying Mpg+ only. Weight changes **5140→3761** (−1379), Acc+ **12→9.5** (−2.5), and MPG **10→20** (+10). Weight and Acc+ targets remain unmet. The single changed X field is the recorded Model code, not a proposed action on the source vehicle. Identical recorded X with different Y (rows 40 and 14) also demonstrates that these characteristics do not determine outcomes or establish causal explanations.
+
+Limitations: recommendations depend on the reference inventory, recorded fields, equal weights, and median-target policy. Changed-field count treats fields equally and says nothing about feasibility, effort, or cost. More targets and lower d2h are different criteria; neither implies every goal improves. Missing inputs weaken comparisons; exact-value matching can count small differences. Acc+ remains physically uncertain and follows its header direction. No causal improvement, commercial availability, Spot/Race implementation, treatment comparison, or independent experimental trial is claimed.
+
+Step 8 validation: **144 tests pass, 0 fail**, including 21 new Fix tests. All eight demos execute successfully; all seven previous outputs match saved pre-Fix hashes. Tests independently verify the Cars search ordering and synthetic lexicographic priorities, target directions, missing/constant data, exact changes, and goal tradeoffs. The Step 7 oracle module is byte-for-byte unchanged and its leakage tests still pass. No test failures or implementation bugs surfaced; no earlier core refactoring was needed. Raw data, frozen documents, HEAD, branches, and milestone tags remain unchanged.
+
 ## Reproducibility and disclosure
 
 Development proceeds incrementally to preserve accurate code-history measurements. Review each working milestone before manually committing and tagging it; this implementation does not create commits, tags, or pushes. Raw datasets, frozen requirements, and hypotheses remain unchanged.
 
-The Step 1 through Step 7 code, tests, and README changes were generated with LLM assistance. This development session is not an independent experimental trial and must not be labeled as human-written treatment code. No LOC measurements, treatment comparisons, or success claims about the research hypotheses are supplied here.
+The Step 1 through Step 8 code, tests, and README changes were generated with LLM assistance. This development session is not an independent experimental trial and must not be labeled as human-written treatment code. No LOC measurements, treatment comparisons, or success claims about the research hypotheses are supplied here.
 
 Course references: [project specification](https://github.com/txt/seai26f/blob/main/docs/submit/uproj.md) and [graduate scope](https://github.com/txt/seai26f/blob/main/docs/submit/gproj.md).

@@ -10,20 +10,24 @@ from .certification import compare
 from .streaming import Inventory
 from .diagnosis import outcome_groups, compare_groups
 from .explanation import Explainer
+from .alternatives import Alternatives, target_status
 from .selection import HistoricalOracle, select_candidates
 from .prediction import KNNRegressor
 from .evaluation import evaluate, train_test_split
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Cars / Remember, Guess, Certify, Flow, Blame, Justify and Choose')
+    parser = argparse.ArgumentParser(description='Cars / Remember, Guess, Certify, Flow, Blame, Justify, Choose and Fix')
     parser.add_argument('--domain', required=True)
     parser.add_argument('--skill', required=True)
     args = parser.parse_args(argv)
-    if args.domain != 'cars' or args.skill not in ('remember', 'guess', 'certify', 'flow', 'blame', 'justify', 'choose'):
-        parser.error('Unsupported domain or skill; only cars / remember, guess, certify, flow, blame, justify, and choose are implemented')
+    if args.domain != 'cars' or args.skill not in ('remember', 'guess', 'certify', 'flow', 'blame', 'justify', 'choose', 'fix'):
+        parser.error('Unsupported domain or skill; only cars / remember, guess, certify, flow, blame, justify, choose, and fix are implemented')
     path = Path(__file__).resolve().parents[1] / 'data/raw/auto93.csv'
     table = Table.load(path)
+    if args.skill == 'fix':
+        fix(table)
+        return
     if args.skill == 'choose':
         choose(table)
         return
@@ -337,6 +341,58 @@ def choose(table):
     print('Heuristic best among inspected candidates; no global optimality or inspection-efficiency '
           'claim. No random baseline or Race comparison. Acc+ is maximized as recorded; '
           'physical meaning remains uncertain.')
+
+
+def print_alternative(result, table):
+    pair = result.comparison
+    print(f'row={pair.b.row.number} source_d2h={pair.a.score:.9f} '
+          f'alternative_d2h={pair.b.score:.9f} improvement={result.improvement:.9f} '
+          f'X_distance={result.distance:.9f} changed_X={len(result.changed)}')
+    print('  X: ' + ', '.join(f'{c.name}={pair.b.row.cells[c.index]}' for c in table.role('x')))
+    changes = ', '.join(f'{c.name}: {c.before} -> {c.after}' for c in result.changed)
+    print(f'  changes: {changes or "none"}; unknown_X={result.unknown_x}')
+    print(f'  improved={pair.favors_b}; worsened={pair.favors_a}; tied={pair.equal}; '
+          f'Pareto_dominates={result.pareto_dominates}')
+    for a, b in zip(pair.a.goals, pair.b.goals):
+        print(f'  {a.name}: {a.raw:g} -> {b.raw:g}; raw_difference={b.raw-a.raw:+g}')
+    print(f'  order: {result.rationale}')
+
+
+def fix(table):
+    search = Alternatives(table)
+    source = search.worst()
+    print('Cars / Fix — CAR-15 and CAR-16')
+    print('Historically observed alternatives; full-table common bounds; equal-weight d2h.')
+    if source is None:
+        print('No complete-goal source available.')
+        return
+    print(f'Source: worst complete record, ties by smallest row ID; row={source.number}')
+    print('Source fields: ' + ', '.join(f'{c.name}={source.cells[c.index]}'
+                                      for c in table.columns if c.role != 'ignored'))
+    print('CAR-15: up to five nearest strictly better overall historical alternatives')
+    results = search.better(source.number)
+    if not results:
+        print('No qualifying better alternative.')
+    for result in results:
+        print_alternative(result, table)
+    targets = {c.name: search.explainer.summaries[c.index].median for c in table.role('y')}
+    print('CAR-16: targets are full historical medians, an initial policy, not customer thresholds:')
+    for c in table.role('y'):
+        print(f'  {c.name} {"<=" if c.ideal == 0 else ">="} {targets[c.name]:g}')
+    status = target_status(source, table.columns, targets)
+    print(f'Source targets: {status.count}/{len(targets)}; satisfied={status.satisfied}; failed={status.failed}')
+    result = search.meet_more(source.number, targets)
+    if result is None:
+        print('No qualifying alternative with more satisfied targets and fully comparable X.')
+    else:
+        print(f'Recommended alternative: row={result.comparison.b.row.number}; '
+              f'target count={result.source_targets.count} -> {result.alternative_targets.count}; '
+              f'satisfied={result.alternative_targets.satisfied}; failed={result.alternative_targets.failed}')
+        print_alternative(result, table)
+    print('Differences describe recorded vehicles, not feasible mechanical modifications, costs, '
+          'or causal improvements. Lower d2h does not imply every goal improves. '
+          'Missing X differences are unknown; CAR-16 excludes such pairs. '
+          'Acc+ follows its header direction; physical interpretation remains uncertain.')
 
 
 if __name__ == '__main__':
