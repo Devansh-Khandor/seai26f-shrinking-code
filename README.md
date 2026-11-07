@@ -8,9 +8,9 @@ The selected domains and original datasets are:
 - NASA / Software Engineering Project Manager: [nasa93dem.csv](data/raw/nasa93dem.csv).
 - Apache / Apache Web Server Administrator: [Apache_AllMeasurements.csv](data/raw/Apache_AllMeasurements.csv).
 
-## Current milestones: Remember, Guess, Certify, and Flow on Cars
+## Current milestones: Remember, Guess, Certify, Flow, and Blame on Cars
 
-**Step 1 — Remember is complete:** CAR-01 (inventory goal summaries) and CAR-02 (ranking recorded multi-goal outcomes). **Step 2 — Guess is complete after validation:** CAR-03 (fuel-efficiency estimates) and CAR-04 (weight estimates with descriptive uncertainty). **Step 3 — Certify is complete after validation:** CAR-05 (cylinder-group MPG comparisons) and CAR-06 (fixed model-year-group performance comparisons). **Step 4 — Flow is complete after validation:** CAR-07 (arrival-time assessment) and CAR-08 (automatic inventory summary and shortlist updates). The remaining six skills—Blame, Justify, Choose, Fix, Spot, and Race—and the NASA and Apache demonstrations are not yet implemented.
+**Step 1 — Remember is complete:** CAR-01 (inventory goal summaries) and CAR-02 (ranking recorded multi-goal outcomes). **Step 2 — Guess is complete after validation:** CAR-03 (fuel-efficiency estimates) and CAR-04 (weight estimates with descriptive uncertainty). **Step 3 — Certify is complete after validation:** CAR-05 (cylinder-group MPG comparisons) and CAR-06 (fixed model-year-group performance comparisons). **Step 4 — Flow is complete after validation:** CAR-07 (arrival-time assessment) and CAR-08 (automatic inventory summary and shortlist updates). **Step 5 — Blame is complete after validation:** CAR-09 (poor-MPG group diagnosis) and CAR-10 (unfavorable overall-performance group diagnosis). The remaining five skills—Justify, Choose, Fix, Spot, and Race—and the NASA and Apache demonstrations are not yet implemented.
 
 From the repository root, using Python 3.8+ and only its standard library:
 
@@ -19,6 +19,7 @@ python3 -m shrinking_code.demo --domain cars --skill remember
 python3 -m shrinking_code.demo --domain cars --skill guess
 python3 -m shrinking_code.demo --domain cars --skill certify
 python3 -m shrinking_code.demo --domain cars --skill flow
+python3 -m shrinking_code.demo --domain cars --skill blame
 ```
 
 The Remember demo reads the actual CSV, reports record counts and column roles, summarizes all three goals, and shows the top five cars with their original data-row numbers, independent characteristics, recorded goals, and scores. Unsupported domains or skills produce an explicit error and a nonzero exit status.
@@ -41,7 +42,8 @@ Tests cover real data summaries and roles, categorical values, missing data, han
 - `shrinking_code/evaluation.py`: deterministic row split, MAE, and a training-mean baseline for this holdout evaluation.
 - `shrinking_code/certification.py`: domain-independent numeric distribution comparison with sample summaries and diagnostic thresholds.
 - `shrinking_code/streaming.py`: validates and accepts sequential records, reusing existing summaries and ranking to maintain exact inventory state.
-- `shrinking_code/demo.py`: Cars Remember, Guess, Certify, and Flow demonstrations; domain configuration stays here.
+- `shrinking_code/diagnosis.py`: fixed outcome-quartile selection and structured numeric/categorical X-only diagnostic evidence.
+- `shrinking_code/demo.py`: Cars Remember, Guess, Certify, Flow, and Blame demonstrations; domain configuration stays here.
 
 Uppercase initial letters denote numeric columns; lowercase initials denote symbolic columns. Goal suffixes `+` and `-` denote numeric goals to maximize and minimize. Suffix `X` excludes a column from inputs and goals while retaining its values for inspection. Remaining columns are inputs. Thus `origin` remains a string category and `HpX` is ignored. The six `?` horsepower entries load as `None`.
 
@@ -147,10 +149,32 @@ This is a simple sequential interface, not a constant-time statistical update al
 
 Step 4 validation: **71 tests pass**, including independently calculated synthetic updates and re-ranking, missing-goal handling, rejection without mutation, no future influence, full-batch equality, and saved pre-Flow demo-output hashes for all three prior skills. The fixture records the `step3` source commit; it is regression evidence, not experimental data. No test failures or implementation errors surfaced during validation. Only CLI dispatch/help and its unsupported-skill test needed adaptation; the earlier core algorithms remain unchanged.
 
+## Blame: historical group diagnosis
+
+CAR-09 compares bottom and top MPG quartiles. CAR-10 compares worst and best d2h quartiles using unchanged `rank_rows()` and full-table bounds. The selection policy is fixed before feature comparison: sort eligible records ascending by `(outcome, original row number)`, take the first and last `floor(n/4)`, and discard the middle. Lower MPG is poor; higher d2h is poor. With 398 eligible records, each group contains **99** cars and 200 middle records are unused. The upper tail selects higher row IDs at a tied boundary; the lower tail selects lower IDs. The groups remain disjoint even if every outcome is tied, in which case the labels carry no actual outcome contrast.
+
+`outcome_groups()` accepts a numerical outcome column (explicit `higher_better=False` for a minimization outcome), or uses Step 1 d2h by default. `select_quartiles()` also accepts an existing row-ID-to-score mapping. Missing outcomes are excluded; fewer than four observed outcomes raises an insufficient-data error. MPG grouping requires only observed MPG, while d2h requires all goals as before. No groups are adjusted after viewing X separation.
+
+`compare_groups()` accepts disjoint tables with the same schema and returns structured `Finding` objects for **X columns only**. Goals, ignored fields, and row IDs are not explanatory inputs. It reuses `summarize()` and the existing certification `compare()`; no parser, normalization, ranking, or statistical test is reimplemented. Findings retain column identity, observed group summaries, total group sizes, direction, descriptive score, categorical evidence, numeric certification diagnostics, and limitations.
+
+- **Numerical X:** show mean and median in both groups; score by the existing absolute Cliff's delta, the absolute imbalance of cross-group greater-than versus less-than pairs. Zero means no directional rank imbalance; one means complete directional separation. Mean direction is explicitly described as higher, lower, or equal, and is not a causal effect. The existing `same` result is supplementary and keeps its thresholds and semantics; `same=False` can result from an effect-size screen alone.
+- **Categorical X:** show each category's counts and proportions in both groups, including zero counts for categories absent in one group. Score by total variation, `0.5 * sum(abs(poor_proportion - favorable_proportion))`. Zero means identical category proportions; one means disjoint category support. Positive per-category differences indicate overrepresentation in the poor group. Numeric-looking codes remain strings; no numeric subtraction is applied to them.
+
+Features are ranked **separately within numerical and categorical types**, descending by their respective score, with original column order breaking ties. These are different descriptive measures and must not be read as a common cross-type importance scale. Findings with fewer than two observed X values in either group retain summaries and explicit insufficient-evidence notes but have no separation score and sort last within type. Missing values are omitted per feature, with observed counts reported. Small nonzero category counts below five are flagged as a descriptive caution, not a statistical decision threshold. Constant features have zero separation when sufficient observations exist.
+
+Actual Cars results (poor/favorable):
+
+- **CAR-09:** MPG means **14.646465 / 33.737374**, medians **10 / 30**, n=99/99. Numeric order: `Volume` delta **0.996429** (means 335.787879 / 101.888889; medians 350 / 97), `Clndrs` **0.994286** (7.717172 / 4.080808; medians 8 / 4), `Model` **0.853076** (73.383838 / 79.212121; medians 73 / 80). `origin` TV **0.717172**; category counts 1: **96/25**, 2: **3/25**, 3: **0/49**.
+- **CAR-10:** d2h means **0.782366 / 0.363853**, medians **0.797106 / 0.385321**, n=99/99. `Clndrs` and `Volume` tie at delta **0.999694**, with column order placing `Clndrs` first. Cylinder means are 7.979798 / 4.060606 (medians 8 / 4); Volume means 346.333333 / 100.479798 (medians 350 / 97). `Model` delta **0.615856**, means 73.696970 / 77.929293 (medians 73 / 79). `origin` TV **0.747475**; category counts 1: **99/25**, 2: **0/27**, 3: **0/47**.
+
+These show historical group associations, not individual causes, predictions, or repair advice. Coarse tied MPG makes quartile membership sensitive to row-ID tie-breaking. The selected extremes omit the middle population. Correlated characteristics may describe the same pattern; these are univariate comparisons without adjustment for confounding or multiple feature comparisons. Small counts, missingness, and selective historical sampling limit generalization. No physical meanings are assigned to origin codes, and d2h retains the uncertain `Acc+` interpretation. Large descriptive separation alone is not a significance claim.
+
+Step 5 validation: **87 tests pass**. Independent raw-CSV calculations verified both group selections, means, medians, pairwise Cliff's deltas, and categorical TV scores. Pre-Blame hashes verify unchanged outputs for all four earlier demos. The previous core algorithms and frozen evaluation/streaming policies remain unchanged; only CLI dispatch/help and the unsupported-skill test were adapted. No unit-test failures or implementation errors surfaced during validation.
+
 ## Reproducibility and disclosure
 
 Development proceeds incrementally to preserve accurate code-history measurements. Review each working milestone before manually committing and tagging it; this implementation does not create commits, tags, or pushes. Raw datasets, frozen requirements, and hypotheses remain unchanged.
 
-The Step 1 through Step 4 code, tests, and README changes were generated with LLM assistance. This development session is not an independent experimental trial and must not be labeled as human-written treatment code. No LOC measurements, treatment comparisons, or success claims about the research hypotheses are supplied here.
+The Step 1 through Step 5 code, tests, and README changes were generated with LLM assistance. This development session is not an independent experimental trial and must not be labeled as human-written treatment code. No LOC measurements, treatment comparisons, or success claims about the research hypotheses are supplied here.
 
 Course references: [project specification](https://github.com/txt/seai26f/blob/main/docs/submit/uproj.md) and [graduate scope](https://github.com/txt/seai26f/blob/main/docs/submit/gproj.md).

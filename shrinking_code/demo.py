@@ -8,17 +8,18 @@ from .ranking import rank_rows
 from .stats import NumericSummary, summarize
 from .certification import compare
 from .streaming import Inventory
+from .diagnosis import outcome_groups, compare_groups
 from .prediction import KNNRegressor
 from .evaluation import evaluate, train_test_split
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Cars / Remember, Guess, Certify and Flow')
+    parser = argparse.ArgumentParser(description='Cars / Remember, Guess, Certify, Flow and Blame')
     parser.add_argument('--domain', required=True)
     parser.add_argument('--skill', required=True)
     args = parser.parse_args(argv)
-    if args.domain != 'cars' or args.skill not in ('remember', 'guess', 'certify', 'flow'):
-        parser.error('Unsupported domain or skill; only cars / remember, guess, certify, and flow are implemented')
+    if args.domain != 'cars' or args.skill not in ('remember', 'guess', 'certify', 'flow', 'blame'):
+        parser.error('Unsupported domain or skill; only cars / remember, guess, certify, flow, and blame are implemented')
     path = Path(__file__).resolve().parents[1] / 'data/raw/auto93.csv'
     table = Table.load(path)
     if args.skill == 'guess':
@@ -29,6 +30,9 @@ def main(argv=None):
         return
     if args.skill == 'flow':
         flow(table)
+        return
+    if args.skill == 'blame':
+        blame(table)
         return
     print('Cars / Remember — CAR-01 and CAR-02')
     print(f'Records: {len(table.rows)}')
@@ -194,6 +198,41 @@ def flow(table):
     print('Exact summaries and rankings recomputed per arrival; no constant-time or '
           'real-time deployment claim. Missing goals are accepted but unranked; '
           'future records never enter arrival assessments.')
+
+
+
+def blame(table):
+    print('Cars / Blame — CAR-09 and CAR-10')
+    print(f'Records: {len(table.rows)}; quartiles are floor(n/4) at each end of '
+          '(outcome, original row ID) ascending; middle records excluded.')
+    print('Ranks are separate by type: numeric absolute Cliff delta; categorical total '
+          'variation (TV). Descending score, ties by original column order.')
+    for requirement, outcome, label in [('CAR-09', 'Mpg+', 'Mpg+'), ('CAR-10', None, 'd2h')]:
+        groups = outcome_groups(table, outcome)
+        print(f'\n{requirement}: {label}; eligible={groups.eligible_count}')
+        for name, summary in [('poor', groups.poor_outcome), ('favorable', groups.favorable_outcome)]:
+            print(f'{name}: n={summary.count}, mean={summary.mean:.6f}, median={summary.median:g}, '
+                  f'range={summary.minimum:.6f}..{summary.maximum:.6f}')
+        for finding in compare_groups(groups.poor, groups.favorable):
+            a, b = finding.poor, finding.favorable
+            score = 'insufficient' if finding.separation is None else f'{finding.separation:.6f}'
+            print(f'{finding.column.name} ({"numeric" if finding.column.numeric else "categorical"}): '
+                  f'separation={score}, observed n={a.count}/{b.count} (poor/favorable)')
+            if finding.column.numeric:
+                print(f'  mean={a.mean}/{b.mean}; median={a.median}/{b.median}; '
+                      f'{finding.direction}; same={finding.certification.same}')
+            else:
+                for e in finding.categories:
+                    print(f'  category={e.value}: counts={e.poor_count}/{e.favorable_count}; '
+                          f'proportions={e.poor_proportion:.3f}/{e.favorable_proportion:.3f}; '
+                          f'poor-minus-favorable={e.difference:+.3f}')
+            for note in finding.limitations:
+                print('  ' + note)
+    print('\nHistorical group associations, not causal conclusions, individual causes, or unseen-car '
+          'predictions. Coarse tied MPG makes quartile boundaries depend on row IDs. '
+          'Feature scores are descriptive, not significance tests; same=False can reflect an '
+          'effect-size screen alone. Missing values and small counts limit evidence. '
+          'd2h retains Step 1 full-table bounds and uncertain Acc+ meaning.')
 
 
 if __name__ == '__main__':
