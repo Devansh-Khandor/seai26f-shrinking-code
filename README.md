@@ -8,9 +8,9 @@ The selected domains and original datasets are:
 - NASA / Software Engineering Project Manager: [nasa93dem.csv](data/raw/nasa93dem.csv).
 - Apache / Apache Web Server Administrator: [Apache_AllMeasurements.csv](data/raw/Apache_AllMeasurements.csv).
 
-## Current milestones: Remember through Spot on Cars
+## Current milestones: Remember through Race on Cars
 
-**Step 1 — Remember is complete:** CAR-01 (inventory goal summaries) and CAR-02 (ranking recorded multi-goal outcomes). **Step 2 — Guess is complete after validation:** CAR-03 (fuel-efficiency estimates) and CAR-04 (weight estimates with descriptive uncertainty). **Step 3 — Certify is complete after validation:** CAR-05 (cylinder-group MPG comparisons) and CAR-06 (fixed model-year-group performance comparisons). **Step 4 — Flow is complete after validation:** CAR-07 (arrival-time assessment) and CAR-08 (automatic inventory summary and shortlist updates). **Step 5 — Blame is complete after validation:** CAR-09 (poor-MPG group diagnosis) and CAR-10 (unfavorable overall-performance group diagnosis). **Step 6 — Justify is complete after validation:** CAR-11 (recommendation comparisons) and CAR-12 (pairwise goal tradeoffs). **Step 7 — Choose implements** CAR-13 (discover a promising car through limited inspections) and CAR-14 (prioritize inspections and report budget checkpoints). **Step 8 — Fix implements** CAR-15 (similar historical alternatives with better recorded outcomes) and CAR-16 (alternatives meeting more targets with fewer X differences). **Step 9 — Spot implements** CAR-17 (X isolation) and CAR-18 (held-out MPG and weight residual review). The remaining skill—Race—and the NASA and Apache demonstrations are not yet implemented.
+**Step 1 — Remember is complete:** CAR-01 (inventory goal summaries) and CAR-02 (ranking recorded multi-goal outcomes). **Step 2 — Guess is complete after validation:** CAR-03 (fuel-efficiency estimates) and CAR-04 (weight estimates with descriptive uncertainty). **Step 3 — Certify is complete after validation:** CAR-05 (cylinder-group MPG comparisons) and CAR-06 (fixed model-year-group performance comparisons). **Step 4 — Flow is complete after validation:** CAR-07 (arrival-time assessment) and CAR-08 (automatic inventory summary and shortlist updates). **Step 5 — Blame is complete after validation:** CAR-09 (poor-MPG group diagnosis) and CAR-10 (unfavorable overall-performance group diagnosis). **Step 6 — Justify is complete after validation:** CAR-11 (recommendation comparisons) and CAR-12 (pairwise goal tradeoffs). **Step 7 — Choose implements** CAR-13 (discover a promising car through limited inspections) and CAR-14 (prioritize inspections and report budget checkpoints). **Step 8 — Fix implements** CAR-15 (similar historical alternatives with better recorded outcomes) and CAR-16 (alternatives meeting more targets with fewer X differences). **Step 9 — Spot implements** CAR-17 (X isolation) and CAR-18 (held-out MPG and weight residual review). **Step 10 — Race implements** CAR-19 (equal-budget random selection comparison) and CAR-20 (prediction versus the training mean). This completes the Cars ten-skill ladder, not the full graduate project. NASA and Apache demonstrations and the seven-treatment experiment harness are not implemented.
 
 From the repository root, using Python 3.8+ and only its standard library:
 
@@ -24,6 +24,7 @@ python3 -m shrinking_code.demo --domain cars --skill justify
 python3 -m shrinking_code.demo --domain cars --skill choose
 python3 -m shrinking_code.demo --domain cars --skill fix
 python3 -m shrinking_code.demo --domain cars --skill spot
+python3 -m shrinking_code.demo --domain cars --skill race
 ```
 
 The Remember demo reads the actual CSV, reports record counts and column roles, summarizes all three goals, and shows the top five cars with their original data-row numbers, independent characteristics, recorded goals, and scores. Unsupported domains or skills produce an explicit error and a nonzero exit status.
@@ -51,7 +52,8 @@ Tests cover real data summaries and roles, categorical values, missing data, han
 - `shrinking_code/selection.py`: masked candidate oracle, sequential predicted-d2h selection, and inspection/checkpoint records.
 - `shrinking_code/alternatives.py`: observed-alternative searches, exact X differences, and direction-aware target satisfaction using existing explanations.
 - `shrinking_code/anomalies.py`: X-only nearest-neighbor isolation and separately ranked held-out target residuals with structured review flags.
-- `shrinking_code/demo.py`: Cars Remember through Spot demonstrations; domain configuration stays here.
+- `shrinking_code/baselines.py`: seeded random inspection, fair selection checkpoint summaries, and paired prediction-error comparisons using existing certification.
+- `shrinking_code/demo.py`: Cars Remember through Race demonstrations; domain configuration stays here.
 
 Uppercase initial letters denote numeric columns; lowercase initials denote symbolic columns. Goal suffixes `+` and `-` denote numeric goals to maximize and minimize. Suffix `X` excludes a column from inputs and goals while retaining its values for inspection. Remaining columns are inputs. Thus `origin` remains a string category and `HpX` is ignored. The six `?` horsepower entries load as `None`.
 
@@ -300,10 +302,45 @@ Limitations: isolation depends on k, reference scaling, missing-data comparabili
 
 Step 9 validation: **161 tests pass, 0 fail**, including 17 new Spot tests. All nine demos execute successfully; the previous eight outputs match saved pre-Spot SHA-256 hashes. Repeated Spot output is identical, and both synthetic and real-data checks preserve Guess prediction semantics. No bugs or test failures surfaced. Earlier core modules, raw data, frozen documents, HEAD, branches, and milestone tags remain unchanged.
 
+## Race: customer-facing baseline comparisons
+
+CAR-19 compares model-guided selection with random selection; CAR-20 compares kNN prediction with the historical training mean. These complete the Cars skill ladder. They do not compare the seven software-development treatments, test the graduate hypotheses, establish cross-domain transfer, or constitute independent LLM experimental repetitions. The frozen CAR-19 wording remains authoritative; the task's paraphrase did not change it.
+
+`selection_race()` reuses the fixed seed-42 split (318 known historical rows, 80 candidates) and runs **one unchanged deterministic Choose trajectory**. It also runs **30 random trajectories with predefined seeds 0..29**, using a local Python `random.Random(seed)` to shuffle candidate rows sorted by original ID. Random selection takes a prefix without replacement and makes no predictions. The CLI records every seed's inspection sequence and checkpoint scores. Reordering the input table does not change the random sequence. Reproduction depends on this Python shuffle procedure; it is not a cross-language RNG specification.
+
+Every run starts with the same history and candidate pool, has a fresh existing `HistoricalOracle`, and spends 40 distinct inspections; budgets 10 and 20 are prefixes of that same run. The random policy receives only masked candidates and the inspection callback, never the unmasked table. It calls existing `distance_to_heaven()` after each reveal using `summarize()` bounds fitted on initial training goals only. It retains Step 7's no-clipping and constant-midpoint policies, exact score/ID best-row tie-break, and missing-goal cost (charged but not eligible as best). Random decisions never depend on outcomes, including previously inspected ones. No strategy is tuned from comparison results.
+
+Both methods pay the same **inspection** budget, not the same computational cost. At budgets 10/20/40, the model makes **2,265 / 4,230 / 7,260 per-goal predictions**; each random run makes zero. Total final inspections across this demonstration are 40 model-guided plus 30×40 random, or **1,240**. The initial 318 known observations are not charged. Structured results retain training/candidate IDs, the original model result, each random seed and inspection history, and checkpoint summaries. Model prediction counts at prefixes follow the number of remaining candidates times goal count and are checked against the existing final counter.
+
+Observed CAR-19 results (lower d2h is better):
+
+- **Budget 10:** model **0.253947221**; random mean **0.298924116**, median **0.263846607**, range **0.167459891..0.521572283**. Random matches or beats the model in **7/30 (23.33%)** runs.
+- **Budget 20:** model **0.253947221**; random mean **0.265182737**, median **0.258316258**, range **0.167459891..0.382321778**. Random matches or beats the model in **10/30 (33.33%)** runs.
+- **Budget 40:** model **0.167459891**; random mean **0.220614149**, median **0.253947221**, range **0.167459891..0.325585691**. Random matches or beats the model in **13/30 (43.33%)** runs.
+
+All 30 runs have defined scores at each checkpoint. Generic summaries omit undefined best scores and explicitly report valid/total trial counts; match-or-beat uses only valid trials and is undefined when none exist or the model has no score. Direct random selection supports zero budgets and stops at pool exhaustion; race checkpoints must be positive, unique, and within the pool, with a nonempty unique seed list. No `same` test compares the single model result with the random distribution. Thirty randomized sequences on one dataset are not thirty independently sampled datasets, and a deterministic trajectory is not replicated into thirty observations.
+
+`prediction_race(training, test, target)` calls existing `KNNRegressor.fit()` and `evaluate()` with unchanged k=5, training-only X normalization, and the existing training-mean baseline. It evaluates exactly the same observed-target test rows for both methods. The predictor's distance and neighbor selection use X only; test goals enter error calculations, never prediction fitting or neighbor choice. Missing test targets are omitted identically; no observed evaluable targets raises the existing evaluation error. A single scored record has descriptive MAEs but `same=None` (insufficient observations).
+
+Each structured paired result retains original row ID, both absolute errors, and **kNN error minus mean error**, where negative favors kNN. The CLI prints every pair, win/loss/tie counts, MAEs, and reduction **baseline MAE minus kNN MAE**. Percentage reduction is `100 * reduction / baseline MAE`; it is undefined when baseline MAE is zero. Counts use exact error comparisons, with no new tolerance.
+
+Observed CAR-20 results, each with 318 training and 80 scored held-out records:
+
+- **Mpg+:** kNN MAE **3.300000000**, historical-mean MAE **7.807389937**; reduction **4.507389937 (57.732353%)**. kNN wins **64**, mean wins **16**, ties **0**.
+- **Lbs-:** kNN MAE **227.337500000**, historical-mean MAE **758.529481132**; reduction **531.191981132 (70.029181%)**. kNN wins **66**, mean wins **14**, ties **0**.
+
+Existing course `compare()` screens the two absolute-error distributions descriptively. For both targets, **same=False**, with Cohen, Cliff's, and KS thresholds exceeded. MPG: Cohen **1.126147124**, Cliff's **0.573437500**, scaled KS **3.715676251**. Weight: Cohen **1.527917887**, Cliff's **0.710312500**, scaled KS **3.952847075**. This procedure does not account for the pairing of errors; per-record differences are preserved rather than calling the distribution comparison a paired significance test. No formal statistical superiority is asserted; `same=True` would not establish equivalence. These are observed improvements and course-screen decisions, not p-values or independent-replication evidence.
+
+Limitations: results depend on one historical split, its shared X combinations, fixed k, default equal goal weights, and uncertain Acc+ meaning. Random-seed variation describes this finite pool only; model performance across different datasets/splits is not measured. The simulation uses historical inspections, not live deployment or cost measurements. The model trajectory is computed once per Race invocation, not once per random seed. One measured development run of the complete Race demo took **5.28 seconds**; runtime is machine/load dependent and not an experimental treatment metric. No earlier algorithm was refactored or optimized.
+
+Step 10 validation: **174 tests pass, 0 fail**, including 13 new Race tests. All ten demos execute successfully; all nine previous outputs match saved pre-Race hashes. Earlier core modules, raw datasets, frozen documents, HEAD, branches, and milestone tags are unchanged.
+
+Step 10 test correction: one synthetic expected win count was initially wrong. Errors 0 and 80 both beat baseline errors 16.6667 and 83.3333, so the expected count was corrected from one win/one loss to two wins. The production calculation needed no change.
+
 ## Reproducibility and disclosure
 
 Development proceeds incrementally to preserve accurate code-history measurements. Review each working milestone before manually committing and tagging it; this implementation does not create commits, tags, or pushes. Raw datasets, frozen requirements, and hypotheses remain unchanged.
 
-The Step 1 through Step 9 code, tests, and README changes were generated with LLM assistance. This development session is not an independent experimental trial and must not be labeled as human-written treatment code. No LOC measurements, treatment comparisons, or success claims about the research hypotheses are supplied here.
+The Step 1 through Step 10 code, tests, and README changes were generated with LLM assistance. This development session is not an independent experimental trial and must not be labeled as human-written treatment code. No LOC measurements, treatment comparisons, or success claims about the research hypotheses are supplied here.
 
 Course references: [project specification](https://github.com/txt/seai26f/blob/main/docs/submit/uproj.md) and [graduate scope](https://github.com/txt/seai26f/blob/main/docs/submit/gproj.md).

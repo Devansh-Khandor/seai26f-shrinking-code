@@ -10,6 +10,7 @@ from .certification import compare
 from .streaming import Inventory
 from .diagnosis import outcome_groups, compare_groups
 from .explanation import Explainer
+from .baselines import selection_race, prediction_race
 from .anomalies import input_isolation, outcome_residuals
 from .alternatives import Alternatives, target_status
 from .selection import HistoricalOracle, select_candidates
@@ -18,14 +19,17 @@ from .evaluation import evaluate, train_test_split
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Cars / Remember, Guess, Certify, Flow, Blame, Justify, Choose, Fix and Spot')
+    parser = argparse.ArgumentParser(description='Cars / Remember, Guess, Certify, Flow, Blame, Justify, Choose, Fix, Spot and Race')
     parser.add_argument('--domain', required=True)
     parser.add_argument('--skill', required=True)
     args = parser.parse_args(argv)
-    if args.domain != 'cars' or args.skill not in ('remember', 'guess', 'certify', 'flow', 'blame', 'justify', 'choose', 'fix', 'spot'):
-        parser.error('Unsupported domain or skill; only cars / remember, guess, certify, flow, blame, justify, choose, fix, and spot are implemented')
+    if args.domain != 'cars' or args.skill not in ('remember', 'guess', 'certify', 'flow', 'blame', 'justify', 'choose', 'fix', 'spot', 'race'):
+        parser.error('Unsupported domain or skill; only cars / remember, guess, certify, flow, blame, justify, choose, fix, spot, and race are implemented')
     path = Path(__file__).resolve().parents[1] / 'data/raw/auto93.csv'
     table = Table.load(path)
+    if args.skill == 'race':
+        race(table)
+        return
     if args.skill == 'spot':
         spot(table)
         return
@@ -425,6 +429,46 @@ def spot(table):
           'outcomes relative to predictions. Flags invite review, not confirmed errors or fraud. '
           'Top-five ranks imply neither statistical significance nor calibrated anomaly probabilities; '
           'neighbor ranges/stddev are descriptive, not calibrated prediction intervals.')
+
+
+def race(table):
+    print('Cars / Race — CAR-19 and CAR-20')
+    selection = selection_race(table)
+    print(f'CAR-19: fixed seed-42 split; training={len(selection.training_ids)}; '
+          f'candidates={len(selection.candidate_ids)}; fixed training goal bounds.')
+    print('One deterministic model trajectory; 30 random.Random seeds 0..29, shuffled sorted IDs, '
+          'without replacement. Checkpoints are prefixes of 40 inspections per run.')
+    print(f'Model inspections={len(selection.model.inspections)}; '
+          f'per-goal predictions={selection.model.prediction_count}')
+    for trial in selection.random_trials:
+        scores = tuple(trial.inspections[b-1].best_score for b in (10,20,40))
+        print(f'random seed={trial.seed} inspections={len(trial.inspections)} predictions=0 '
+              f'best_d2h_10_20_40={scores} IDs={tuple(d.row.number for d in trial.inspections)}')
+    for c in selection.checkpoints:
+        s = c.random_summary
+        print(f'budget={c.budget} model={c.model_score:.9f} random_mean={s.mean:.9f} '
+              f'median={s.median:.9f} min={s.minimum:.9f} max={s.maximum:.9f} '
+              f'random_match_or_beat={c.match_or_beat_fraction:.6f} valid={c.valid_trials}/{c.total_trials} '
+              f'inspections_per_method_run={c.budget} model_predictions={c.model_predictions} random_predictions=0')
+    print('No same comparison for one deterministic model trajectory versus 30 random trajectories.')
+    training, test = train_test_split(table)
+    for target in ('Mpg+', 'Lbs-'):
+        r = prediction_race(training, test, target)
+        e, c = r.evaluation, r.comparison
+        print(f'CAR-20 {target}: training={e.training_count} scored_test={e.test_count} '
+              f'knn_MAE={e.mae:.9f} mean_MAE={e.baseline_mae:.9f} '
+              f'MAE_reduction={r.improvement:.9f} percent_reduction={r.percentage_improvement} '
+              f'knn_wins={r.wins} mean_wins={r.losses} ties={r.ties}')
+        print('Paired absolute errors: row knn mean difference(knn-minus-mean)')
+        for p in r.pairs:
+            print(f'  {p.number} {p.knn_error:.9f} {p.mean_error:.9f} {p.difference:+.9f}')
+        print(f'Course descriptive comparison: same={c.same}; exceeded={c.exceeded}; '
+              f'cohen={c.cohen}; cliffs={c.cliffs}; KS={c.ks}')
+    print('Observed improvements and course distribution screens are descriptive. same does not '
+          'account for paired errors; no formal statistical superiority or equivalence is established. '
+          'Random seeds reuse one dataset, not independent datasets; the deterministic model is not '
+          'replicated 30 times. These are customer-facing method comparisons, not the seven '
+          'software-development treatments or an independent LLM experimental repetition.')
 
 
 if __name__ == '__main__':
