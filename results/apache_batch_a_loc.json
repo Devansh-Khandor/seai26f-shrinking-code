@@ -1,0 +1,62 @@
+{
+  "baseline": "41e9c47a3919984d5cb0715729054e00752d66ad",
+  "target": "WORKTREE (provisional)",
+  "files": [
+    {
+      "path": "shrinking_code/diagnosis.py",
+      "category": "shared_additions",
+      "added": 16,
+      "removed": 0,
+      "total": 125,
+      "sha256": "65c095658eab2d9b147931ad15ffa3f161ccf3fa37bd7646489e751989c36be8"
+    },
+    {
+      "path": "shrinking_code/apache.py",
+      "category": "apache_adapter",
+      "added": 156,
+      "removed": 0,
+      "total": 156,
+      "sha256": "873f684fd8ebae1b8ec69b4f90e92aa1befb0a7e0e82d0b03478e4eabca8a0ee"
+    },
+    {
+      "path": "shrinking_code/demo.py",
+      "category": "shared_dispatch",
+      "added": 6,
+      "removed": 1,
+      "total": 445,
+      "sha256": "105330e2bccb5bc57290d82bd8c0b03f91f3058fe165d116746a8897793671d4"
+    },
+    {
+      "path": "tests/test_apache.py",
+      "category": "apache_tests",
+      "added": 148,
+      "removed": 0,
+      "total": 148,
+      "sha256": "6df8955cb76e9822493ac54339e05b9fe32fb3066bf4f3868675247e17125cdd"
+    },
+    {
+      "path": "tests/test_remember.py",
+      "category": "test_integration",
+      "added": 1,
+      "removed": 1,
+      "total": 102,
+      "sha256": "6944c65741b5e3c1e4b77be5d082426bf1b45eebc0e523f2339cf8635968d0f0"
+    },
+    {
+      "path": "README.md",
+      "category": "documentation",
+      "added": 28,
+      "removed": 2,
+      "total": 289,
+      "sha256": "7a74a7519fee5737701ef74e8f520790e1e8199536af53625f1ef91d7ddb5583"
+    },
+    {
+      "path": "experiments/measure_transfer.py",
+      "category": "measurement_infrastructure",
+      "added": 23,
+      "removed": 5,
+      "total": 112,
+      "sha256": "0367808cf0625a1654a2014d7599ee27444af86eb50bd75f74d69cc264a328c7"
+    }
+  ]
+}

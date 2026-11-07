@@ -23,13 +23,18 @@ def main(argv=None):
     parser.add_argument('--domain', required=True)
     parser.add_argument('--skill', required=True)
     args = parser.parse_args(argv)
+    if args.domain == 'apache' and args.skill in ('remember', 'guess', 'certify', 'flow', 'blame'):
+        from . import apache
+        table = Table.load(Path(__file__).resolve().parents[1] / 'data/raw/Apache_AllMeasurements.csv')
+        getattr(apache, args.skill)(table)
+        return
     if args.domain == 'nasa' and args.skill in ('remember', 'guess', 'certify', 'flow', 'blame', 'justify', 'choose', 'fix', 'spot', 'race'):
         from . import nasa
         table = Table.load(Path(__file__).resolve().parents[1] / 'data/raw/nasa93dem.csv')
         getattr(nasa, args.skill)(table)
         return
     if args.domain != 'cars' or args.skill not in ('remember', 'guess', 'certify', 'flow', 'blame', 'justify', 'choose', 'fix', 'spot', 'race'):
-        parser.error('Unsupported domain or skill; only cars / remember, guess, certify, flow, blame, justify, choose, fix, spot, and race are implemented; nasa supports the same ten skills')
+        parser.error('Unsupported domain or skill; only cars / remember, guess, certify, flow, blame, justify, choose, fix, spot, and race are implemented; nasa supports the same ten skills; apache supports remember, guess, certify, flow, blame')
     path = Path(__file__).resolve().parents[1] / 'data/raw/auto93.csv'
     table = Table.load(path)
     if args.skill == 'race':

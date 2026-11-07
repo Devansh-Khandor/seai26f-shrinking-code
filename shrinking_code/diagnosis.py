@@ -122,3 +122,22 @@ def compare_groups(poor, favorable):
                                 direction, certification, categories, tuple(notes)))
     return tuple(sorted(findings, key=lambda f: (not f.column.numeric, f.separation is None,
                                                -(f.separation or 0), f.column.index)))
+
+
+def categorical_pairs(reference):
+    """Project every pair of varying categorical X onto a joint category.
+
+    Reuse compare_groups on disjoint row-ID subsets of this projection. Missing
+    either value makes the joint cell missing. Constants are excluded explicitly.
+    """
+    from itertools import combinations
+    import json
+    from .data import Row
+    columns = [c for c in reference.role('x') if not c.numeric
+               and len(summarize(reference, c).frequencies) > 1]
+    pairs = tuple(combinations(columns, 2))
+    schema = tuple(Column(i, 'pair:' + a.name + '/' + b.name) for i, (a,b) in enumerate(pairs))
+    rows = tuple(Row(r.number, tuple(None if r.cells[a.index] is None or r.cells[b.index] is None
+                                    else json.dumps([r.cells[a.index], r.cells[b.index]])
+                                    for a,b in pairs)) for r in reference.rows)
+    return Table(schema, rows)
