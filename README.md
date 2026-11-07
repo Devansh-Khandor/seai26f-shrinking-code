@@ -8,9 +8,9 @@ The selected domains and original datasets are:
 - NASA / Software Engineering Project Manager: [nasa93dem.csv](data/raw/nasa93dem.csv).
 - Apache / Apache Web Server Administrator: [Apache_AllMeasurements.csv](data/raw/Apache_AllMeasurements.csv).
 
-## Current milestones: Remember, Guess, and Certify on Cars
+## Current milestones: Remember, Guess, Certify, and Flow on Cars
 
-**Step 1 — Remember is complete:** CAR-01 (inventory goal summaries) and CAR-02 (ranking recorded multi-goal outcomes). **Step 2 — Guess is complete after validation:** CAR-03 (fuel-efficiency estimates) and CAR-04 (weight estimates with descriptive uncertainty). **Step 3 — Certify is complete after validation:** CAR-05 (cylinder-group MPG comparisons) and CAR-06 (fixed model-year-group performance comparisons). The remaining seven skills—Flow, Blame, Justify, Choose, Fix, Spot, and Race—and the NASA and Apache demonstrations are not yet implemented.
+**Step 1 — Remember is complete:** CAR-01 (inventory goal summaries) and CAR-02 (ranking recorded multi-goal outcomes). **Step 2 — Guess is complete after validation:** CAR-03 (fuel-efficiency estimates) and CAR-04 (weight estimates with descriptive uncertainty). **Step 3 — Certify is complete after validation:** CAR-05 (cylinder-group MPG comparisons) and CAR-06 (fixed model-year-group performance comparisons). **Step 4 — Flow is complete after validation:** CAR-07 (arrival-time assessment) and CAR-08 (automatic inventory summary and shortlist updates). The remaining six skills—Blame, Justify, Choose, Fix, Spot, and Race—and the NASA and Apache demonstrations are not yet implemented.
 
 From the repository root, using Python 3.8+ and only its standard library:
 
@@ -18,6 +18,7 @@ From the repository root, using Python 3.8+ and only its standard library:
 python3 -m shrinking_code.demo --domain cars --skill remember
 python3 -m shrinking_code.demo --domain cars --skill guess
 python3 -m shrinking_code.demo --domain cars --skill certify
+python3 -m shrinking_code.demo --domain cars --skill flow
 ```
 
 The Remember demo reads the actual CSV, reports record counts and column roles, summarizes all three goals, and shows the top five cars with their original data-row numbers, independent characteristics, recorded goals, and scores. Unsupported domains or skills produce an explicit error and a nonzero exit status.
@@ -39,7 +40,8 @@ Tests cover real data summaries and roles, categorical values, missing data, han
 - `shrinking_code/prediction.py`: immutable k-nearest-neighbors regressor for any numerical goal and descriptive neighbor uncertainty.
 - `shrinking_code/evaluation.py`: deterministic row split, MAE, and a training-mean baseline for this holdout evaluation.
 - `shrinking_code/certification.py`: domain-independent numeric distribution comparison with sample summaries and diagnostic thresholds.
-- `shrinking_code/demo.py`: Cars Remember, Guess, and Certify demonstrations; domain grouping stays here.
+- `shrinking_code/streaming.py`: validates and accepts sequential records, reusing existing summaries and ranking to maintain exact inventory state.
+- `shrinking_code/demo.py`: Cars Remember, Guess, Certify, and Flow demonstrations; domain configuration stays here.
 
 Uppercase initial letters denote numeric columns; lowercase initials denote symbolic columns. Goal suffixes `+` and `-` denote numeric goals to maximize and minimize. Suffix `X` excludes a column from inputs and goals while retaining its values for inspection. Remaining columns are inputs. Thus `origin` remains a string category and `HpX` is ignored. The six `?` horsepower entries load as `None`.
 
@@ -59,7 +61,7 @@ All goals have equal weight. Lower `d2h` is better under this policy. A constant
 
 Rows missing **any** goal are excluded from ranking rather than imputed. The demo reports the excluded count. Observed goal values in otherwise incomplete rows still contribute to that goal's range. If no rows have complete goals, the ranking is empty; a table without goals raises an error. Ties use original data-row numbers. Normalization and ranking are intended for observed rows in the evaluation table, not extrapolation to unseen values.
 
-For Cars, the policy minimizes `Lbs-` and maximizes `Acc+` and `Mpg+`. `Acc+` units and physical interpretation remain uncertain. This ranks historical outcomes; it predicts neither unseen vehicle performance nor purchase price, and it does not establish faster physical acceleration. Equal weighting is an initial policy, not a learned customer preference. Rankings depend on the evaluation table's ranges, and recorded MPG values are coarse. Batch summaries retain data in memory; no streaming skill is implemented.
+For Cars, the policy minimizes `Lbs-` and maximizes `Acc+` and `Mpg+`. `Acc+` units and physical interpretation remain uncertain. This ranks historical outcomes; it predicts neither unseen vehicle performance nor purchase price, and it does not establish faster physical acceleration. Equal weighting is an initial policy, not a learned customer preference. Rankings depend on the evaluation table's ranges, and recorded MPG values are coarse. Batch summaries retain data in memory; Flow reuses them for exact updates.
 
 ## Guess prediction policy and evaluation
 
@@ -127,10 +129,28 @@ These procedure-based distinctions are exploratory historical associations. Six 
 
 Step 3 validation: 56 tests pass. Remember and Guess complete outputs remain byte-for-byte unchanged. Existing modules were reused without refactoring; only CLI dispatch/help was extended and the unsupported-Certify test now uses Flow. No statistical runtime error or failing unit test was found. The initial guessed reference filename `eg6.lua` was corrected to the repository's actual `ezr-eg6.lua` before implementation.
 
+## Flow: arrival assessment and inventory updates
+
+`Inventory(initial_table)` accepts an empty table with a valid goal-bearing schema or an existing inventory. `accept(cells, number=None)` takes values in original schema order, using `Column.parse()` for the existing types and missing-value policy (`?` or Python `None`). Explicit positive integer row numbers preserve source identities; otherwise the next identity is `max(existing IDs)+1`. Duplicate IDs, wrong widths, invalid numeric values, and malformed cells are rejected before state changes. Repeated characteristics with distinct IDs remain valid observations.
+
+Each arrival is staged with the current accepted inventory in a temporary `Table`. `rank_rows()` computes common bounds from that inventory **plus the arrival**, re-scores every complete-goal candidate, and determines the arrival's 1-based rank and top-five membership. No future record enters this assessment. If bounds expand, all candidates use the expanded bounds together. The immutable `Arrival` result preserves its arrival-time decision even if later records change rankings. This evaluates observed outcomes; it does not predict missing outcomes.
+
+Records with incomplete goals are accepted but receive `rank=None`, `score=None`, and `top_five=False`. Their observed values still update summaries and goal bounds, following Step 1 semantics. If there are fewer than five complete-goal records, all eligible records enter the shortlist. Ties use original row identity. A first complete record in an empty inventory has constant-goal midpoint normalization, not a claim of ideal performance.
+
+After validation and assessment, the component commits the new table, all-column summaries, shortlist, and accepted-arrival count together. Initial records are not included in `accepted_count`; inventory size is `len(inventory.table.rows)`. Rows are retained in original identity order, which also makes symbolic mode ties consistent with full-batch source order. Numerical means, medians, minima/maxima and categorical frequencies/modes are recomputed using `summarize()`; there is no second statistical or ranking implementation.
+
+The demo reuses seed-42 partitioning: **318 initial records and 80 incoming records**, with the incoming partition processed in original CSV row order. This is synthetic ordering, not actual chronology. Step 2's held-out partition is reused only as an independent Flow simulation; no predictor is trained or refitted, and Guess's frozen evaluation and MAEs remain unchanged. Every arrival decision is retained, with the first three and last three printed. Only after all arrivals are processed does the demo compare its final table, every column summary, and shortlist against independently computed full-batch results; it prints PASS only if all match, otherwise raises an error.
+
+Observed final result: **80 accepted arrivals, 398 total records**, with shortlist rows **395, 394, 393, 396, 377**, matching Remember. The last arrival (row 395) is rank 1 with d2h 0.167460 at arrival. All three goal summaries and categorical frequencies match the full inventory.
+
+This is a simple sequential interface, not a constant-time statistical update algorithm. It retains all records and recomputes exact summaries (including median sorting) and rankings at each acceptance, roughly O(columns × n log n) work per arrival and O(columns × n) retained data. It is single-process, not a concurrent, persistent, or real-time deployment system. Arrival decisions depend on the synthetic initial inventory and order. Existing d2h weighting and uncertain `Acc+` interpretation still apply.
+
+Step 4 validation: **71 tests pass**, including independently calculated synthetic updates and re-ranking, missing-goal handling, rejection without mutation, no future influence, full-batch equality, and saved pre-Flow demo-output hashes for all three prior skills. The fixture records the `step3` source commit; it is regression evidence, not experimental data. No test failures or implementation errors surfaced during validation. Only CLI dispatch/help and its unsupported-skill test needed adaptation; the earlier core algorithms remain unchanged.
+
 ## Reproducibility and disclosure
 
 Development proceeds incrementally to preserve accurate code-history measurements. Review each working milestone before manually committing and tagging it; this implementation does not create commits, tags, or pushes. Raw datasets, frozen requirements, and hypotheses remain unchanged.
 
-The Step 1, Step 2, and Step 3 code, tests, and README changes were generated with LLM assistance. This development session is not an independent experimental trial and must not be labeled as human-written treatment code. No LOC measurements, treatment comparisons, or success claims about the research hypotheses are supplied here.
+The Step 1 through Step 4 code, tests, and README changes were generated with LLM assistance. This development session is not an independent experimental trial and must not be labeled as human-written treatment code. No LOC measurements, treatment comparisons, or success claims about the research hypotheses are supplied here.
 
 Course references: [project specification](https://github.com/txt/seai26f/blob/main/docs/submit/uproj.md) and [graduate scope](https://github.com/txt/seai26f/blob/main/docs/submit/gproj.md).

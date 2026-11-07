@@ -1,4 +1,4 @@
-"""Run the Cars Remember and Guess milestones from the repository root."""
+"""Run the completed Cars milestones from the repository root."""
 
 import argparse
 from itertools import combinations
@@ -7,17 +7,18 @@ from .data import Table
 from .ranking import rank_rows
 from .stats import NumericSummary, summarize
 from .certification import compare
+from .streaming import Inventory
 from .prediction import KNNRegressor
 from .evaluation import evaluate, train_test_split
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Cars / Remember, Guess and Certify')
+    parser = argparse.ArgumentParser(description='Cars / Remember, Guess, Certify and Flow')
     parser.add_argument('--domain', required=True)
     parser.add_argument('--skill', required=True)
     args = parser.parse_args(argv)
-    if args.domain != 'cars' or args.skill not in ('remember', 'guess', 'certify'):
-        parser.error('Unsupported domain or skill; only cars / remember, guess, and certify are implemented')
+    if args.domain != 'cars' or args.skill not in ('remember', 'guess', 'certify', 'flow'):
+        parser.error('Unsupported domain or skill; only cars / remember, guess, certify, and flow are implemented')
     path = Path(__file__).resolve().parents[1] / 'data/raw/auto93.csv'
     table = Table.load(path)
     if args.skill == 'guess':
@@ -25,6 +26,9 @@ def main(argv=None):
         return
     if args.skill == 'certify':
         certify(table)
+        return
+    if args.skill == 'flow':
+        flow(table)
         return
     print('Cars / Remember — CAR-01 and CAR-02')
     print(f'Records: {len(table.rows)}')
@@ -146,6 +150,50 @@ def certify(table):
           'Small groups and tied/coarse MPG values limit asymptotic KS interpretation. '
           'These are historical associations, not causal effects or guarantees for inventory decisions. '
           'No failure to distinguish proves equivalence; Acc+ physical meaning remains uncertain.')
+
+
+
+def flow(table):
+    initial, incoming = train_test_split(table)
+    inventory = Inventory(initial)
+    print('Cars / Flow — CAR-07 and CAR-08')
+    print(f'Initial inventory: {len(initial.rows)}; incoming records: {len(incoming.rows)}')
+    print('Synthetic arrival order: seed-42 partition, incoming records in original row order; '
+          'not a real chronology. Separate from the frozen Guess evaluation.')
+    print('Each arrival is compared with current inventory using common bounds including '
+          'that arrival, before acceptance. Observed outcomes, not predictions.')
+    decisions = []
+    for row in incoming.rows:
+        decisions.append(inventory.accept(row.cells, number=row.number))
+    print('CAR-07 sample decisions (first three and last three arrivals):')
+    for i, decision in enumerate(decisions, 1):
+        if i <= 3 or i > len(decisions) - 3:
+            score = 'unranked: incomplete goals' if decision.score is None else f'{decision.score:.6f}'
+            print(f'arrival={i} row={decision.row.number} prior_n={decision.previous_count} '
+                  f'rank={decision.rank} top_five={decision.top_five} d2h={score}')
+    print(f'CAR-08 accepted arrivals: {inventory.accepted_count}; '
+          f'final inventory: {len(inventory.table.rows)}')
+    for c in inventory.table.role('y'):
+        s = inventory.summaries[c.index]
+        print(f'{c.name}: n={s.count}, min={s.minimum:g}, max={s.maximum:g}, '
+              f'mean={s.mean:.6f}, median={s.median:g}')
+    for c in inventory.table.columns:
+        if not c.numeric:
+            s = inventory.summaries[c.index]
+            print(f'{c.name}: n={s.count}, frequencies={s.frequencies}, mode={s.mode}')
+    print('Final top-five row / d2h:')
+    for row, score in inventory.shortlist:
+        print(f'{row.number} {score:.6f}')
+    # Only after the stream finishes may the full dataset be used for verification.
+    matches = (inventory.table == table
+               and inventory.summaries == tuple(summarize(table, c) for c in table.columns)
+               and inventory.shortlist == tuple(rank_rows(table)[:5]))
+    print('Full-batch Remember verification: ' + ('PASS' if matches else 'FAIL'))
+    if not matches:
+        raise RuntimeError('Stream final state does not match full-batch results')
+    print('Exact summaries and rankings recomputed per arrival; no constant-time or '
+          'real-time deployment claim. Missing goals are accepted but unranked; '
+          'future records never enter arrival assessments.')
 
 
 if __name__ == '__main__':
