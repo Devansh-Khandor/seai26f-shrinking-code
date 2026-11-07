@@ -8,17 +8,18 @@ The selected domains and original datasets are:
 - NASA / Software Engineering Project Manager: [nasa93dem.csv](data/raw/nasa93dem.csv).
 - Apache / Apache Web Server Administrator: [Apache_AllMeasurements.csv](data/raw/Apache_AllMeasurements.csv).
 
-## Current milestone: Step 1 — Remember on Cars
+## Current milestones: Remember and Guess on Cars
 
-Only **CAR-01** (inventory goal summaries) and **CAR-02** (ranking recorded multi-goal outcomes) are implemented. The other nine skills—Guess, Certify, Flow, Blame, Justify, Choose, Fix, Spot, and Race—and the NASA and Apache demonstrations are not yet implemented.
+**Step 1 — Remember is complete:** CAR-01 (inventory goal summaries) and CAR-02 (ranking recorded multi-goal outcomes). **Step 2 — Guess is complete after validation:** CAR-03 (fuel-efficiency estimates) and CAR-04 (weight estimates with descriptive uncertainty). The remaining eight skills—Certify, Flow, Blame, Justify, Choose, Fix, Spot, and Race—and the NASA and Apache demonstrations are not yet implemented.
 
 From the repository root, using Python 3.8+ and only its standard library:
 
 ```sh
 python3 -m shrinking_code.demo --domain cars --skill remember
+python3 -m shrinking_code.demo --domain cars --skill guess
 ```
 
-The demo reads the actual CSV, reports record counts and column roles, summarizes all three goals, and shows the top five cars with their original data-row numbers, independent characteristics, recorded goals, and scores. Unsupported domains or skills produce an explicit error and a nonzero exit status.
+The Remember demo reads the actual CSV, reports record counts and column roles, summarizes all three goals, and shows the top five cars with their original data-row numbers, independent characteristics, recorded goals, and scores. Unsupported domains or skills produce an explicit error and a nonzero exit status.
 
 Run all automated tests:
 
@@ -33,7 +34,10 @@ Tests cover real data summaries and roles, categorical values, missing data, han
 - `shrinking_code/data.py`: immutable `Column`, `Row`, and `Table` representations and MOOT CSV loading. Names and column order are preserved; row numbers start at 1 after the header.
 - `shrinking_code/stats.py`: numerical count, minimum, maximum, mean, median, and normalization; symbolic count, frequencies, and mode.
 - `shrinking_code/ranking.py`: equal-weight distance to heaven and deterministic historical ranking, with no Cars-specific names or values.
-- `shrinking_code/demo.py`: the Cars Remember command-line demonstration.
+- `shrinking_code/distance.py`: immutable training-fitted mixed-type X distance, reusing column roles, summaries, and normalization.
+- `shrinking_code/prediction.py`: immutable k-nearest-neighbors regressor for any numerical goal and descriptive neighbor uncertainty.
+- `shrinking_code/evaluation.py`: deterministic row split, MAE, and a training-mean baseline for this holdout evaluation.
+- `shrinking_code/demo.py`: the Cars Remember and Guess command-line demonstrations.
 
 Uppercase initial letters denote numeric columns; lowercase initials denote symbolic columns. Goal suffixes `+` and `-` denote numeric goals to maximize and minimize. Suffix `X` excludes a column from inputs and goals while retaining its values for inspection. Remaining columns are inputs. Thus `origin` remains a string category and `HpX` is ignored. The six `?` horsepower entries load as `None`.
 
@@ -53,12 +57,37 @@ All goals have equal weight. Lower `d2h` is better under this policy. A constant
 
 Rows missing **any** goal are excluded from ranking rather than imputed. The demo reports the excluded count. Observed goal values in otherwise incomplete rows still contribute to that goal's range. If no rows have complete goals, the ranking is empty; a table without goals raises an error. Ties use original data-row numbers. Normalization and ranking are intended for observed rows in the evaluation table, not extrapolation to unseen values.
 
-For Cars, the policy minimizes `Lbs-` and maximizes `Acc+` and `Mpg+`. `Acc+` units and physical interpretation remain uncertain. This ranks historical outcomes; it predicts neither unseen vehicle performance nor purchase price, and it does not establish faster physical acceleration. Equal weighting is an initial policy, not a learned customer preference. Rankings depend on the evaluation table's ranges, and recorded MPG values are coarse. Batch summaries retain data in memory; no streaming or prediction skill is implemented.
+For Cars, the policy minimizes `Lbs-` and maximizes `Acc+` and `Mpg+`. `Acc+` units and physical interpretation remain uncertain. This ranks historical outcomes; it predicts neither unseen vehicle performance nor purchase price, and it does not establish faster physical acceleration. Equal weighting is an initial policy, not a learned customer preference. Rankings depend on the evaluation table's ranges, and recorded MPG values are coarse. Batch summaries retain data in memory; no streaming skill is implemented.
+
+## Guess prediction policy and evaluation
+
+`KNNRegressor.fit(training, k=5, p=2)` fits X normalization once using only the training table. `predict(query, target)` supports any numerical goal by exact column name, including both `Mpg+` and `Lbs-`. No goal, ignored column, or row number enters feature distance. The same fitted model is used for both targets. Positive integer k is configurable; no k tuning uses test data.
+
+For each available X column, numeric distance is the absolute difference between values normalized by the training range; categorical distance is zero for equal strings and one otherwise. Distance is `(sum(difference**p) / available_column_count)**(1/p)`, with finite `p >= 1`. If either row is missing an input, that column is skipped for that pair. Numeric inputs with no training observations are also skipped. No comparable inputs gives infinite distance, making that candidate ineligible. Constant training inputs normalize to 0.5 through the existing summary, hence contribute zero distance even for a new value. Nonconstant inputs outside the training range are not clipped; distances may exceed one.
+
+Neighbors must have an observed requested target and finite X distance. They are ordered by distance rounded to 12 decimal places, then original row number (rounding affects ordering only, stabilizing floating-point ties); up to k are used. Prediction is their arithmetic mean. Minimum, maximum, and **population** standard deviation describe neighbor outcomes (one neighbor has zero standard deviation). These are **not calibrated prediction intervals**; zero dispersion does not imply certainty. No eligible neighbors produces an explicit error rather than a fabricated estimate.
+
+Queries must use the training schema and original source identities. Prediction rejects a query whose row number appears in training, including a copy with masked goals. New records need unused row numbers. Row numbers only guard overlap and break ties. The evaluation checks matching schemas and disjoint train/test identities before scoring.
+
+The fixed split sorts original row identities, shuffles them with a local `Random(42)`, assigns the first `floor(0.8 * 398) = 318` rows to training and the remaining 80 to testing, then restores row order within each partition. No goal values determine assignment. Training-only normalization remains frozen during evaluation. Both targets and the historical-training-mean baseline use the same observed-target test records. Missing test targets are omitted from both MAEs; an unscorable observed target causes evaluation to fail explicitly rather than silently reduce coverage.
+
+Validated single-split results (k=5, p=2; 80 observed test targets each):
+
+- `Mpg+`: predictor MAE **3.300000**; training-mean baseline MAE **7.807390** (training mean **23.899371**).
+- `Lbs-`: predictor MAE **227.337500**; training-mean baseline MAE **758.529481** (training mean **2965.446541**).
+
+Both MAEs are lower than the baseline on this split. This is descriptive holdout evaluation, not a significance claim, the full Race skill, or a seven-treatment experiment. The Guess demo prints five held-out predictions per target with actual values, errors, and neighbor dispersion. These are historical records, not live vehicle evaluations.
+
+Limitations: **29 of 80 test rows share X combinations with training**, so this split does not establish generalization to entirely new configurations. MPG values are coarse, and the small historical dataset may not represent new inventory. Equal feature weighting and k=5 are initial fixed choices. Pairwise missing-input omission can favor neighbors compared on fewer features; constant features cannot detect novelty. Neighbor dispersion does not measure all prediction error. Exact neighbor search scans all training rows.
+
+Step 2 validation covers training-only normalization, identity separation, deterministic splits/ties, missing inputs and targets, independent synthetic distances/predictions/MAEs, baseline correctness, reproducible CLI output, and Step 1 regression tests. The full suite has 42 passing tests. Independent raw-CSV verification caught a floating-point tie-ordering discrepancy; ordering now rounds distances to 12 decimal places before breaking ties by row identity, with a regression test. The reported MAEs above use this corrected policy.
+
+Step 1 refactoring: only CLI dispatch/help changed to add Guess; the Remember output body and shared data, statistics, and ranking modules remain unchanged. The old unsupported-Guess test now checks unsupported Certify instead. New prediction/evaluation logic is separate from these existing components.
 
 ## Reproducibility and disclosure
 
 Development proceeds incrementally to preserve accurate code-history measurements. Review each working milestone before manually committing and tagging it; this implementation does not create commits, tags, or pushes. Raw datasets, frozen requirements, and hypotheses remain unchanged.
 
-The Step 1 package, tests, and README were generated with LLM assistance. This development session is not an independent experimental trial and must not be labeled as human-written treatment code. No LOC measurements, treatment comparisons, or success claims about the research hypotheses are supplied here.
+The Step 1 and Step 2 code, tests, and README changes were generated with LLM assistance. This development session is not an independent experimental trial and must not be labeled as human-written treatment code. No LOC measurements, treatment comparisons, or success claims about the research hypotheses are supplied here.
 
 Course references: [project specification](https://github.com/txt/seai26f/blob/main/docs/submit/uproj.md) and [graduate scope](https://github.com/txt/seai26f/blob/main/docs/submit/gproj.md).
