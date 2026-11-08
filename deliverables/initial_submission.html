@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>The Shrinking-Code Experiment — Initial Submission</title><style>@page { size: Letter; margin: 0.45in 0.55in; }
+* { box-sizing: border-box; }
+body { margin:0; color:#17212b; font:10pt/1.16 Georgia, "Times New Roman", serif; }
+main { max-width:7.4in; margin:0 auto; }
+h1 { font: bold 21pt/1.08 Georgia, serif; margin:0 0 5pt; color:#172d42; }
+h2 { font:bold 10.5pt/1.15 Arial,sans-serif; color:#172d42; margin:8pt 0 4pt; border-bottom:0.5pt solid #aab5bf; padding-bottom:2pt; break-after:avoid; }
+p { margin:3pt 0; }
+blockquote { margin:3pt 0 5pt; padding-left:9pt; border-left:2pt solid #7e91a2; }
+ol { margin:3pt 0; padding-left:17pt; }
+li { margin:3pt 0; }
+a { color:inherit; text-decoration:underline; text-underline-offset:1.5pt; }
+code { font:8.5pt/1.15 "Courier New",monospace; }
+pre { margin:4pt 0; padding:5pt 7pt; background:#f0f3f5; font:8.5pt/1.2 "Courier New",monospace; white-space:pre-wrap; }
+p,li,blockquote { orphans:2; widows:2; }
+@media screen { body { background:#e7ebef; padding:24px; } main { background:white; padding:0.45in 0.55in; max-width:8.5in; min-height:11in; box-shadow:0 2px 12px #0002; } }
+@media print { body { print-color-adjust:exact; -webkit-print-color-adjust:exact; } }
+</style></head><body><main><h1>The Shrinking-Code Experiment</h1>
+<p><strong>NC State · CSC 591 — AI &amp; Software Engineering · Fall 2026</strong><br>Initial submission · November 9, 2026 · Verified November 8, 2026<br>Repository: <a href="https://github.com/Devansh-Khandor/seai26f-shrinking-code">https://github.com/Devansh-Khandor/seai26f-shrinking-code</a></p>
+<h2>Preregistered hypotheses</h2>
+<p><strong>H1 — The Timm Hypothesis</strong></p>
+<blockquote>Neuro-symbolic systems improve when their symbolic half is factored into small reusable structures. The ten skills are synonyms: one machine (cluster, tree, leaf) wearing ten hats. Hence an LLM, or a human, extends a well-factored library with less new code, and fewer errors, than a monolithic one.</blockquote>
+<p><strong>H2 — The Rival Hypothesis</strong></p>
+<blockquote>The ten skills are ten separate problems. Factoring buys nothing: skill i+1 costs about the same whoever writes it, and whatever library sits underneath.</blockquote>
+<h2>Preregistered win conditions</h2>
+<p><strong>Evidence Supporting H1</strong></p>
+<p>H1 will receive support if:</p>
+<ol><li>Reuse treatments demonstrate an overall downward trend in new LOC across successive skills.</li><li>At least two of the three matched LLM treatment pairs (T2 versus T1, T4 versus T3, T6 versus T5) exhibit lower new LOC for reuse, with differences certified by <code>same</code>.</li><li>Reuse treatments maintain comparable correctness and do not achieve smaller code sizes by omitting required functionality.</li><li>The shared framework demonstrates measurable reuse across domains, including the third domain.</li></ol>
+<p>Condition 2 is our proposed decision threshold, not a threshold specified by the professor. All comparisons, including unsuccessful ones, will be reported.</p>
+<p><strong>Evidence Supporting H2</strong></p>
+<p>H2 will receive support if new-code-per-step trends remain approximately flat, the reuse treatments do not show certified improvements over the no-reuse baselines, and the shared architecture provides little transferable functionality across domains.</p>
+<p>A lack of statistical significance alone will not be treated as proof of equivalence.</p>
+<p><strong>Mixed or Inconclusive Findings</strong></p>
+<p>If results vary across domains, libraries, or skill categories, we will report mixed findings.</p>
+<p>We will not change the win conditions after examining the experimental outcomes.</p>
+<h2>Three clients, datasets, and frozen requirements</h2>
+<p>Our three invented clients are an Independent Used-Car Dealership selecting automobiles from <code>auto93.csv</code> (398 records), a Software Engineering Project Manager estimating software outcomes from <code>nasa93dem.csv</code> (93 records), and an Apache Web Server Administrator optimizing observed configurations from <code>Apache_AllMeasurements.csv</code> (192 records). All datasets are in <code>data/raw/</code>. The frozen documents <a href="../docs/requirements_cars.md">docs/requirements_cars.md</a>, <a href="../docs/requirements_nasa.md">docs/requirements_nasa.md</a>, and <a href="../docs/requirements_apache.md">docs/requirements_apache.md</a> each contain 20 skill-tagged customer requests, two per skill. Requirements and hypotheses were frozen November 6, 2026.</p>
+<h2>Working implementation and reproducibility</h2>
+<p>We have implemented all 60 customer requests at commit <code>ab8b791</code>, with working demonstrations: ten each for Cars, NASA, and Apache. We verified <strong>229 tests passed, 0 failed</strong> with the full suite, including all 30 demos and unchanged outputs for the previous 25. Our Cars ladder tags: <a href="https://github.com/Devansh-Khandor/seai26f-shrinking-code/tree/step1"><code>step1</code></a>, <a href="https://github.com/Devansh-Khandor/seai26f-shrinking-code/tree/step2"><code>step2</code></a>, <a href="https://github.com/Devansh-Khandor/seai26f-shrinking-code/tree/step3"><code>step3</code></a>, <a href="https://github.com/Devansh-Khandor/seai26f-shrinking-code/tree/step4"><code>step4</code></a>, <a href="https://github.com/Devansh-Khandor/seai26f-shrinking-code/tree/step5"><code>step5</code></a>, <a href="https://github.com/Devansh-Khandor/seai26f-shrinking-code/tree/step6"><code>step6</code></a>, <a href="https://github.com/Devansh-Khandor/seai26f-shrinking-code/tree/step7"><code>step7</code></a>, <a href="https://github.com/Devansh-Khandor/seai26f-shrinking-code/tree/step8"><code>step8</code></a>, <a href="https://github.com/Devansh-Khandor/seai26f-shrinking-code/tree/step9"><code>step9</code></a>, <a href="https://github.com/Devansh-Khandor/seai26f-shrinking-code/tree/step10"><code>step10</code></a>. Transfer completion tags: <code>nasa-complete</code>, <code>apache-complete</code>.</p>
+<p>From the repository root (Python 3, standard library):</p>
+<pre>python3 -m shrinking_code.demo --domain &lt;domain&gt; --skill &lt;skill&gt;
+python3 -m unittest discover -s tests -v</pre>
+<p>Replace <code>&lt;domain&gt;</code> with <code>cars</code>, <code>nasa</code>, or <code>apache</code>; replace <code>&lt;skill&gt;</code> with <code>remember</code>, <code>guess</code>, <code>certify</code>, <code>flow</code>, <code>blame</code>, <code>justify</code>, <code>choose</code>, <code>fix</code>, <code>spot</code>, or <code>race</code> (the ladder order). For example: <code>python3 -m shrinking_code.demo --domain apache --skill fix</code>.</p></main></body></html>
