@@ -1,0 +1,6 @@
+## Reply format (required)
+- Reply with only the files you add or modify. For each one, write a line `FILE: <relative path>` followed by one fenced code block containing the complete file.
+- To remove a file, write a line `DELETE: <relative path>`.
+- Do not write tests.
+- Provide the entry point `$entry`, run as `$run_cmd $entry <csv path>`.
+- When run, it must print, for each request, a line that is exactly `== <ID> ==` (for example `$example_header`) followed by at least three lines of results, including the actual numbers.

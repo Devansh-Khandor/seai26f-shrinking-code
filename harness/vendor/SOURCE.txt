@@ -1,0 +1,5 @@
+Copied unchanged from txt/seai26f src/ezr-lua at commit 2f64eaa.
+MIT license, (c) 2026 Tim Menzies <timm@ieee.org>.
+
+91f5aebc8d52ff9631ddd08c0156b00dec77c8d261852ea7bed0f4d4e16580af  ezr.lua
+57f662fada19fffcf1fbe77e1899d0c8f0ec4e5411fc6416f0e6dbbc401baf16  ezr-lib.lua

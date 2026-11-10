@@ -1,0 +1,3 @@
+Write Lua. The library below is available as `local ezr = require("ezr")`. Its functions are fields of that table, e.g. `ezr.same`. These library files are provided for you: do not modify them and do not include them in your reply.
+
+$ezr_files
