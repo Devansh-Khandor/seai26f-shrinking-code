@@ -5,14 +5,14 @@ import threading
 import unittest
 from unittest import mock
 
-from harness.backends import (BackendError, ContextOverflow, FakeBackend, OllamaBackend,
+from harness.backends import (BackendError, ContextOverflow, FakeBackend, LlamaCppBackend, OllamaBackend,
                               OpenAICompatBackend, RetryableError, fits, make_backend, with_retries)
 
 
 class Stub:
     """A tiny HTTP server answering every POST with (status, json body)."""
 
-    def __init__(self, status, body):
+    def __init__(self, status, body, get_body=None):
         stub = self
         self.requests = []
 
@@ -22,6 +22,15 @@ class Stub:
                 stub.requests.append((self.path, dict(self.headers), json.loads(data)))
                 payload = json.dumps(body).encode()
                 self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def do_GET(self):
+                stub.requests.append((self.path, dict(self.headers), None))
+                payload = json.dumps(get_body if get_body is not None else {}).encode()
+                self.send_response(200 if get_body is not None else 404)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
@@ -40,8 +49,8 @@ class Stub:
 
 
 class TestBackends(unittest.TestCase):
-    def stub(self, status, body):
-        s = Stub(status, body)
+    def stub(self, status, body, get_body=None):
+        s = Stub(status, body, get_body)
         self.addCleanup(s.close)
         return s
 
@@ -168,6 +177,61 @@ class TestBackends(unittest.TestCase):
 
     def test_make_backend_think(self):
         self.assertEqual(make_backend("ollama", "gpt-oss:20b", think="low").think, "low")
+
+    PROPS = {"model_path": "models\\gpt-oss-20b-MXFP4.gguf", "build_info": "b12242-3b4d6ab3f",
+             "default_generation_settings": {"n_ctx": 32768, "params": {"temperature": 1.0}}}
+
+    def test_llamacpp_request(self):
+        s = self.stub(200, {"choices": [{"message": {"content": "code", "reasoning_content": "hmm"},
+                                         "finish_reason": "stop"}],
+                            "usage": {"prompt_tokens": 9, "completion_tokens": 4}})
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "secret"}):
+            c = LlamaCppBackend("gpt-oss-20b", base_url=s.url, context_tokens=8192, think="high").complete("x" * 4000)
+        self.assertEqual((c.text, c.prompt_tokens, c.response_tokens, c.finish_reason), ("code", 9, 4, "stop"))
+        path, headers, body = s.requests[0]
+        self.assertEqual(path, "/v1/chat/completions")
+        self.assertNotIn("Authorization", headers)
+        self.assertEqual(body["max_tokens"], 8192 - 1150)
+        self.assertEqual(body["chat_template_kwargs"], {"reasoning_effort": "high"})
+        self.assertNotIn("temperature", body)
+
+    def test_llamacpp_no_think_by_default(self):
+        s = self.stub(200, {"choices": [{"message": {"content": "x"}}]})
+        LlamaCppBackend("m", base_url=s.url, temperature=0.5).complete("hi")
+        body = s.requests[0][2]
+        self.assertNotIn("chat_template_kwargs", body)
+        self.assertEqual(body["temperature"], 0.5)
+
+    def test_llamacpp_context_error(self):
+        s = self.stub(400, {"error": {"type": "exceed_context_size_error",
+                                      "message": "the request exceeds the available context size"}})
+        with self.assertRaises(ContextOverflow):
+            LlamaCppBackend("m", base_url=s.url).complete("hi")
+
+    def test_llamacpp_describe(self):
+        s = self.stub(200, {}, get_body=self.PROPS)
+        d = LlamaCppBackend("m", base_url=s.url, think="low").describe()
+        self.assertEqual(d, {"temperature": 1.0, "think": "low", "quantization": "MXFP4",
+                             "model_digest": "gpt-oss-20b-MXFP4.gguf@b12242-3b4d6ab3f"})
+        self.assertEqual(LlamaCppBackend("m", base_url=s.url, temperature=0.2).describe()["temperature"], 0.2)
+
+    def test_llamacpp_verify(self):
+        s = self.stub(200, {}, get_body=self.PROPS)
+        LlamaCppBackend("m", base_url=s.url, context_tokens=32768).verify()
+        with self.assertRaisesRegex(BackendError, "-c 65536"):
+            LlamaCppBackend("m", base_url=s.url, context_tokens=65536).verify()
+
+    def test_llamacpp_verify_server_down(self):
+        s = self.stub(200, {})
+        url = s.url
+        s.close()
+        with self.assertRaisesRegex(BackendError, "not usable"):
+            LlamaCppBackend("m", base_url=url).verify()
+
+    def test_make_backend_llamacpp(self):
+        b = make_backend("llamacpp", "gpt-oss-20b", context_tokens=65536, think="medium")
+        self.assertEqual((b.name, b.base_url, b.context_tokens, b.think),
+                         ("llamacpp", "http://localhost:8080", 65536, "medium"))
 
     def test_make_backend(self):
         self.assertEqual(make_backend("ollama", "m").model, "m")

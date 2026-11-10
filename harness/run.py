@@ -144,6 +144,11 @@ def run(cfg, out=print):
     if cfg.dry_run:
         return _dry_run(cfg, domains, out)
     preflight(cfg)
+    if hasattr(cfg.backend, "verify"):
+        try:
+            cfg.backend.verify()
+        except BackendError as e:
+            raise SystemExit(str(e))
     if not cfg.backend_info and hasattr(cfg.backend, "describe"):
         try:
             cfg.backend_info = {k: v for k, v in cfg.backend.describe().items() if v is not None}
@@ -172,13 +177,13 @@ def run(cfg, out=print):
 
 def build_parser():
     ap = argparse.ArgumentParser(prog="python -m harness", description=__doc__.split("\n")[0])
-    ap.add_argument("--backend", required=True, choices=["ollama", "openai", "claude-cli", "fake"])
+    ap.add_argument("--backend", required=True, choices=["ollama", "llamacpp", "openai", "claude-cli", "fake"])
     ap.add_argument("--model", required=True)
     ap.add_argument("--base-url")
     ap.add_argument("--context", type=int, help="context window in tokens")
     ap.add_argument("--temperature", type=float)
     ap.add_argument("--think", choices=["low", "medium", "high"],
-                    help="reasoning effort for thinking models (ollama only), e.g. gpt-oss")
+                    help="reasoning effort for thinking models (ollama, llamacpp), e.g. gpt-oss")
     ap.add_argument("--domains", default="cars,nasa,apache")
     ap.add_argument("--treatments", default="T1-T6")
     ap.add_argument("--trials", default="1-3")

@@ -32,7 +32,10 @@ Only the backend changes between runs. Everything else stays the same.
 # Local model through Ollama
 python -m harness --backend ollama --model qwen2.5-coder:14b --context 32768
 
-# Any OpenAI-compatible API (OpenAI, DeepSeek, LM Studio, llama.cpp, vLLM)
+# Local model through llama.cpp's llama-server (see "llama.cpp setup" below)
+python -m harness --backend llamacpp --model gpt-oss-20b --context 32768 --think medium
+
+# Any OpenAI-compatible API (OpenAI, DeepSeek, LM Studio, vLLM)
 python -m harness --backend openai --model gpt-4.1-mini            # uses OPENAI_API_KEY
 python -m harness --backend openai --base-url https://api.deepseek.com --model deepseek-chat   # DEEPSEEK_API_KEY
 python -m harness --backend openai --base-url http://localhost:1234/v1 --model local-model     # LM Studio
@@ -42,6 +45,21 @@ python -m harness --backend claude-cli --model sonnet
 ```
 
 The model names above are examples. Record the exact tag and quantization you actually use in `RUN_ENV.md`.
+
+### llama.cpp setup
+
+The `llamacpp` backend talks to `llama-server` (default `http://localhost:8080`). Compared with `--backend openai` it caps each reply (`max_tokens`) so prompt plus reply fits the context, passes `--think` to the gpt-oss chat template as `reasoning_effort`, never sends an API key, and records the GGUF file, build and server temperature in every row. Before the first call it reads `/props` and refuses to start if the server's per-slot context differs from `--context`.
+
+Start the server in its own terminal and leave it running. Replace the placeholders with where you unpacked the llama.cpp release and saved the GGUF:
+
+```powershell
+<llama.cpp dir>\llama-server.exe -m <models dir>\gpt-oss-20b-MXFP4.gguf `
+  -c 32768 -np 1 -ngl 99 --jinja --temp 1.0 --top-p 1.0 --port 8080
+```
+
+- `-c` must equal the harness `--context`. `-np 1` keeps the whole context in one slot (with `-np N` each slot gets `c/N`).
+- `-ngl 99` puts every layer on the GPU. `--temp 1.0 --top-p 1.0` are OpenAI's recommended gpt-oss settings; the value the server uses is what each row records.
+- The reasoning trace comes back separately from the answer and is not saved as code, but it does count toward `max_tokens`, so keep one `--think` level for the whole experiment.
 
 `claude-cli` runs each call in an empty temp directory with no tools, no settings files, no MCP servers, no slash commands and no saved session. It can't use `--bare`, because that refuses subscription logins. As a result, a user-level `~/.claude/CLAUDE.md` on the run machine may still load. Run it under an account that doesn't have one.
 
@@ -56,7 +74,7 @@ The model names above are examples. Record the exact tag and quantization you ac
 | `--check-timeout` | `120` seconds | |
 | `--runs-root` / `--results` | `harness/runs`, `harness/results/runs.csv` | |
 | `--dry-run` | off | Writes each skill-1 prompt and prints its estimated size. No LLM calls. |
-| `--think` | off | Reasoning effort for thinking models on Ollama (`low`, `medium`, `high`), e.g. gpt-oss. Reasoning counts toward the reply cap, so use one level for the whole experiment. Every row records it. |
+| `--think` | off | Reasoning effort for thinking models on Ollama or llama.cpp (`low`, `medium`, `high`), e.g. gpt-oss. Reasoning counts toward the reply cap, so use one level for the whole experiment. Every row records it. |
 
 ## Safety checks
 

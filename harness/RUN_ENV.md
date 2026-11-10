@@ -11,6 +11,9 @@ Fill this in on the machine that runs the treatments, once per model or setup ch
 | scikit-learn version | |
 | Lua interpreter + version | |
 | Backend | |
+| llama.cpp build (if used) | |
+| `llama-server` command line (if used) | |
+| GGUF file + SHA256 (if used) | |
 | Model tag | |
 | Quantization | |
 | Context (`--context`) | |

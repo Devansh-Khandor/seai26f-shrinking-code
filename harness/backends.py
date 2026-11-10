@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import json
 import math
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -74,6 +75,24 @@ def _post_json(url, payload, headers=None, timeout=600):
         raise RetryableError(f"cannot reach {url}: {e}") from e
 
 
+def _get_json(url, timeout=30):
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as e:
+        raise BackendError(f"HTTP {e.code} from {url}") from e
+    except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
+        raise RetryableError(f"cannot reach {url}: {e}") from e
+    except json.JSONDecodeError as e:
+        raise BackendError(f"non-JSON reply from {url}") from e
+
+
+def reply_cap(prompt, context_tokens):
+    """Largest reply that keeps prompt + reply inside the window, so a looping model stops early."""
+    room = context_tokens - math.ceil(estimate_tokens(prompt) * 1.15)
+    return max(256, min(MAX_OUTPUT_TOKENS, room))
+
+
 class FakeBackend:
     name = "fake"
 
@@ -114,8 +133,7 @@ class OllamaBackend:
     def complete(self, prompt):
         # Cap the reply so prompt + reply stays inside num_ctx (Ollama silently
         # drops prompt tokens otherwise) and a looping model stops early.
-        room = self.context_tokens - math.ceil(estimate_tokens(prompt) * 1.15)
-        options = {"num_ctx": self.context_tokens, "num_predict": max(256, min(MAX_OUTPUT_TOKENS, room))}
+        options = {"num_ctx": self.context_tokens, "num_predict": reply_cap(prompt, self.context_tokens)}
         if self.temperature is not None:
             options["temperature"] = self.temperature
         payload = {"model": self.model, "stream": False, "options": options,
@@ -164,6 +182,79 @@ class OpenAICompatBackend:
 
     def describe(self):
         return {"temperature": self.temperature}
+
+
+QUANT_RE = re.compile(r"(MXFP4|IQ\d_[A-Z]+|Q\d_K(?:_[SML])?|Q\d_\d|BF16|F16|F32)", re.I)
+
+
+class LlamaCppBackend:
+    """llama.cpp `llama-server`, OpenAI-compatible chat endpoint plus /props.
+
+    Unlike the generic OpenAI backend it caps the reply (max_tokens), passes
+    gpt-oss reasoning effort through the chat template, never sends an API key,
+    and checks that --context matches the server's per-slot context (-c / -np).
+    """
+
+    name = "llamacpp"
+
+    def __init__(self, model, base_url="http://localhost:8080", context_tokens=DEFAULT_CONTEXT,
+                 temperature=None, timeout=900, think=None):
+        self.model, self.base_url, self.think = model, base_url.rstrip("/"), think
+        self.context_tokens, self.temperature, self.timeout = context_tokens, temperature, timeout
+
+    def props(self):
+        return _get_json(f"{self.base_url}/props")
+
+    @staticmethod
+    def _server_ctx(props):
+        dgs = props.get("default_generation_settings") or {}
+        return dgs.get("n_ctx") or props.get("n_ctx")
+
+    def verify(self):
+        """Raise BackendError unless the server is up and its context equals --context."""
+        try:
+            props = self.props()
+        except BackendError as e:
+            raise BackendError(f"llama-server not usable at {self.base_url}: {e}") from e
+        n_ctx = self._server_ctx(props)
+        if n_ctx is not None and n_ctx != self.context_tokens:
+            raise BackendError(f"llama-server context per slot is {n_ctx} but --context is "
+                               f"{self.context_tokens}; restart with -c {self.context_tokens} -np 1 "
+                               f"or pass --context {n_ctx}")
+
+    def describe(self):
+        info = {"temperature": self.temperature, "think": self.think}
+        try:
+            props = self.props()
+        except BackendError:
+            return info
+        path = props.get("model_path") or ""
+        fname = os.path.basename(path.replace("\\", "/"))
+        m = QUANT_RE.search(fname)
+        info["quantization"] = m.group(1).upper() if m else None
+        build = props.get("build_info")
+        info["model_digest"] = f"{fname}@{build}" if build else (fname or None)
+        if self.temperature is None:  # record what the server actually samples with
+            params = (props.get("default_generation_settings") or {}).get("params") or {}
+            info["temperature"] = params.get("temperature")
+        return info
+
+    def complete(self, prompt):
+        payload = {"model": self.model, "messages": [{"role": "user", "content": prompt}],
+                   "max_tokens": reply_cap(prompt, self.context_tokens), "stream": False}
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
+        if self.think is not None:  # gpt-oss chat template reads reasoning_effort: low|medium|high
+            payload["chat_template_kwargs"] = {"reasoning_effort": self.think}
+        data = _post_json(f"{self.base_url}/v1/chat/completions", payload, timeout=self.timeout)
+        try:
+            choice = data["choices"][0]
+            text = choice["message"].get("content") or ""
+        except (KeyError, IndexError, AttributeError, TypeError) as e:
+            raise BackendError(f"unexpected llama-server reply: {str(data)[:300]}") from e
+        usage = data.get("usage") or {}
+        return Completion(text, usage.get("prompt_tokens"), usage.get("completion_tokens"),
+                          choice.get("finish_reason"))
 
 
 class ClaudeCliBackend:
@@ -233,8 +324,11 @@ def make_backend(name, model, base_url=None, context_tokens=None, temperature=No
             base_url = "https://api.openai.com/v1"
         key_env = "DEEPSEEK_API_KEY" if "deepseek" in base_url else "OPENAI_API_KEY"
         return OpenAICompatBackend(model, base_url, key_env, temperature=temperature, **ctx)
+    if name == "llamacpp":
+        return LlamaCppBackend(model, base_url or "http://localhost:8080", temperature=temperature,
+                               think=think, **ctx)
     if name == "claude-cli":
         return ClaudeCliBackend(model, **ctx)
     if name == "fake":
         return FakeBackend(["(fake backend: no reply configured)"], model, **ctx)
-    raise ValueError(f"unknown backend {name!r}; choose ollama, openai, claude-cli or fake")
+    raise ValueError(f"unknown backend {name!r}; choose ollama, llamacpp, openai, claude-cli or fake")
