@@ -97,12 +97,12 @@ class OllamaBackend:
     name = "ollama"
 
     def __init__(self, model, base_url="http://localhost:11434", context_tokens=DEFAULT_CONTEXT,
-                 temperature=None, timeout=600):
-        self.model, self.base_url = model, base_url.rstrip("/")
+                 temperature=None, timeout=600, think=None):
+        self.model, self.base_url, self.think = model, base_url.rstrip("/"), think
         self.context_tokens, self.temperature, self.timeout = context_tokens, temperature, timeout
 
     def describe(self):
-        info = {"temperature": self.temperature}
+        info = {"temperature": self.temperature, "think": self.think}
         try:
             data = _post_json(f"{self.base_url}/api/show", {"model": self.model}, timeout=30)
         except BackendError:
@@ -118,10 +118,11 @@ class OllamaBackend:
         options = {"num_ctx": self.context_tokens, "num_predict": max(256, min(MAX_OUTPUT_TOKENS, room))}
         if self.temperature is not None:
             options["temperature"] = self.temperature
-        data = _post_json(f"{self.base_url}/api/chat",
-                          {"model": self.model, "stream": False, "options": options,
-                           "messages": [{"role": "user", "content": prompt}]},
-                          timeout=self.timeout)
+        payload = {"model": self.model, "stream": False, "options": options,
+                   "messages": [{"role": "user", "content": prompt}]}
+        if self.think is not None:  # reasoning effort for thinking models, e.g. gpt-oss: low|medium|high
+            payload["think"] = self.think
+        data = _post_json(f"{self.base_url}/api/chat", payload, timeout=self.timeout)
         used = data.get("prompt_eval_count")
         # Ollama truncates an oversized prompt silently; a full window means it did.
         if used is not None and used >= self.context_tokens:
@@ -222,10 +223,11 @@ class ClaudeCliBackend:
         return {}
 
 
-def make_backend(name, model, base_url=None, context_tokens=None, temperature=None):
+def make_backend(name, model, base_url=None, context_tokens=None, temperature=None, think=None):
     ctx = {} if context_tokens is None else {"context_tokens": context_tokens}
     if name == "ollama":
-        return OllamaBackend(model, base_url or "http://localhost:11434", temperature=temperature, **ctx)
+        return OllamaBackend(model, base_url or "http://localhost:11434", temperature=temperature,
+                             think=think, **ctx)
     if name == "openai":
         if not base_url:
             base_url = "https://api.openai.com/v1"

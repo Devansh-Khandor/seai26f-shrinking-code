@@ -154,6 +154,21 @@ class TestBackends(unittest.TestCase):
             with self.assertRaises(ContextOverflow):
                 ClaudeCliBackend().complete("hi")
 
+    def test_ollama_think_level(self):
+        s = self.stub(200, {"message": {"content": "hi", "thinking": "hmm"}, "prompt_eval_count": 1, "eval_count": 1})
+        b = OllamaBackend("gpt-oss:20b", base_url=s.url, think="low")
+        b.complete("hello")
+        self.assertEqual(s.requests[0][2]["think"], "low")
+        self.assertEqual(b.describe()["think"], "low")
+
+    def test_ollama_no_think_by_default(self):
+        s = self.stub(200, {"message": {"content": "hi"}, "prompt_eval_count": 1, "eval_count": 1})
+        OllamaBackend("m", base_url=s.url).complete("hello")
+        self.assertNotIn("think", s.requests[0][2])
+
+    def test_make_backend_think(self):
+        self.assertEqual(make_backend("ollama", "gpt-oss:20b", think="low").think, "low")
+
     def test_make_backend(self):
         self.assertEqual(make_backend("ollama", "m").model, "m")
         self.assertEqual(make_backend("openai", "gpt", base_url="http://x").name, "openai")

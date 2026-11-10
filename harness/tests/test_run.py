@@ -173,6 +173,20 @@ class TestRun(unittest.TestCase):
         order = [(r["trial"], r["treatment"]) for r in load_rows(self.root / "runs.csv")]
         self.assertEqual(order, [("1", "T1"), ("1", "T2"), ("2", "T1"), ("2", "T2")])
 
+    def test_cli_think_flag(self):
+        from harness.run import build_parser
+        a = build_parser().parse_args(["--backend", "ollama", "--model", "gpt-oss:20b", "--think", "low"])
+        self.assertEqual(a.think, "low")
+
+    def test_ctrl_c_exits_cleanly(self):
+        from harness import run as run_mod
+        with mock.patch.object(run_mod, "run", side_effect=KeyboardInterrupt), \
+             mock.patch("builtins.print") as fake_print:
+            with self.assertRaises(SystemExit) as cm:
+                run_mod.main(["--backend", "fake", "--model", "fake"])
+        self.assertEqual(cm.exception.code, 130)
+        self.assertIn("rerun the same command", str(fake_print.call_args))
+
     def test_parse_list(self):
         self.assertEqual(parse_list("T1-T6", "T"), ["T1", "T2", "T3", "T4", "T5", "T6"])
         self.assertEqual(parse_list("T1,T3", "T"), ["T1", "T3"])

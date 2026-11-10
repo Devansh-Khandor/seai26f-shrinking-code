@@ -29,7 +29,7 @@ T7, the human treatment, is not run here. Its rows can be added to the same CSV 
 Only the backend changes between runs. Everything else stays the same.
 
 ```sh
-# Local model through Ollama (the default plan: the 4080 PC)
+# Local model through Ollama
 python -m harness --backend ollama --model qwen2.5-coder:14b --context 32768
 
 # Any OpenAI-compatible API (OpenAI, DeepSeek, LM Studio, llama.cpp, vLLM)
@@ -56,6 +56,7 @@ The model names above are examples. Record the exact tag and quantization you ac
 | `--check-timeout` | `120` seconds | |
 | `--runs-root` / `--results` | `harness/runs`, `harness/results/runs.csv` | |
 | `--dry-run` | off | Writes each skill-1 prompt and prints its estimated size. No LLM calls. |
+| `--think` | off | Reasoning effort for thinking models on Ollama (`low`, `medium`, `high`), e.g. gpt-oss. Reasoning counts toward the reply cap, so use one level for the whole experiment. Every row records it. |
 
 ## Safety checks
 
@@ -66,14 +67,14 @@ The model names above are examples. Record the exact tag and quantization you ac
 
 ## Resume
 
-Rerun the **same command**. Finished steps are skipped. A step whose snapshot directory is missing gets redone. A `backend_error` row (the server was down or retries ran out) stops that trial and is retried on the next run. A crash loses at most the call that was in flight.
+Press Ctrl+C at any time to stop. Rerun the **same command** to continue. Finished steps are skipped. A step whose snapshot directory is missing gets redone. A `backend_error` row (the server was down or retries ran out) stops that trial and is retried on the next run. A crash loses at most the call that was in flight.
 
-## Milestone 1 procedure (Cars, for the talk)
+## First-run procedure (one domain)
 
 1. `python -m harness --backend ollama --model <tag> --domains cars --dry-run`. This checks the sizes; T5/T6 start about 9k tokens larger.
 2. `python -m harness --backend ollama --model <tag> --domains cars --treatments T1,T5 --trials 1`. This is one full ladder each for T1 and T5.
 3. `python -m harness.analyze --model <tag>`, then open `results/<tag>/sizing.md`. If T5 at step 10 is near the context limit, raise `--context` if VRAM allows. If it still overflows, stop and decide with the team. Don't trim `ezr.lua`.
-4. Overnight: `python -m harness --backend ollama --model <tag> --domains cars --trials 1-3`.
+4. Full run: `python -m harness --backend ollama --model <tag> --domains cars --trials 1-3`.
 5. `python -m harness.analyze --model <tag>`.
 
 ## Outputs

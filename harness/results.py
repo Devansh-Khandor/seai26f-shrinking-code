@@ -7,7 +7,7 @@ from pathlib import Path
 FIELDS = ("model", "backend", "domain", "treatment", "trial", "skill_index", "skill", "status",
           "runs", "contract", "new_loc", "deleted_loc", "test_loc", "total_loc", "pct_new",
           "prompt_tokens", "response_tokens", "prompt_tokens_est", "finish_reason", "output_capped",
-          "seconds", "timestamp", "prompt_template_hash", "temperature", "quantization", "model_digest")
+          "seconds", "timestamp", "prompt_template_hash", "temperature", "think", "quantization", "model_digest")
 
 # backend_error is deliberately absent: resume retries it.
 DONE_STATUSES = {"ok", "parse_failed", "context_overflow", "output_truncated", "timeout"}

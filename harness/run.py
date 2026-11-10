@@ -170,13 +170,15 @@ def run(cfg, out=print):
                         break
 
 
-def main(argv=None):
+def build_parser():
     ap = argparse.ArgumentParser(prog="python -m harness", description=__doc__.split("\n")[0])
     ap.add_argument("--backend", required=True, choices=["ollama", "openai", "claude-cli", "fake"])
     ap.add_argument("--model", required=True)
     ap.add_argument("--base-url")
     ap.add_argument("--context", type=int, help="context window in tokens")
     ap.add_argument("--temperature", type=float)
+    ap.add_argument("--think", choices=["low", "medium", "high"],
+                    help="reasoning effort for thinking models (ollama only), e.g. gpt-oss")
     ap.add_argument("--domains", default="cars,nasa,apache")
     ap.add_argument("--treatments", default="T1-T6")
     ap.add_argument("--trials", default="1-3")
@@ -185,6 +187,11 @@ def main(argv=None):
     ap.add_argument("--runs-root", type=Path, default=HARNESS_DIR / "runs")
     ap.add_argument("--results", type=Path, default=HARNESS_DIR / "results" / "runs.csv")
     ap.add_argument("--dry-run", action="store_true")
+    return ap
+
+
+def main(argv=None):
+    ap = build_parser()
     a = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")
@@ -192,11 +199,15 @@ def main(argv=None):
     unknown = [t for t in treatments if t not in TREATMENTS]
     if unknown:
         ap.error(f"unknown treatments {unknown}")
-    cfg = RunConfig(make_backend(a.backend, a.model, a.base_url, a.context, a.temperature),
+    cfg = RunConfig(make_backend(a.backend, a.model, a.base_url, a.context, a.temperature, a.think),
                     parse_list(a.domains), treatments, [int(x) for x in parse_list(a.trials)],
                     [int(x) for x in parse_list(a.skills)], a.runs_root, a.results,
                     a.check_timeout, a.dry_run)
-    run(cfg)
+    try:
+        run(cfg)
+    except KeyboardInterrupt:
+        print("\nstopped. Finished steps are saved; rerun the same command to resume.")
+        raise SystemExit(130)
 
 
 if __name__ == "__main__":
