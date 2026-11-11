@@ -6,6 +6,7 @@
 import argparse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import sys
 import time
@@ -120,6 +121,69 @@ def preflight(cfg):
         raise SystemExit(f"T3/T4 need scikit-learn in {sys.executable}: pip install -r requirements.txt")
 
 
+def _pkg_version(name):
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        return version(name)
+    except PackageNotFoundError:
+        return "not installed"
+
+
+def _lua_version():
+    exe = lua_executable()
+    if exe is None:
+        return "not found"
+    try:
+        import subprocess
+        p = subprocess.run([exe, "-v"], capture_output=True, text=True, timeout=10)
+        return ((p.stdout or p.stderr).strip().split("  ")[0]) or os.path.basename(exe)
+    except Exception:
+        return os.path.basename(exe)
+
+
+def _rel(path):
+    try:
+        return Path(path).resolve().relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return Path(path).name
+
+
+def _banner(cfg, domains, done, wanted, out):
+    """Print what is about to run, so a wrong flag shows up before the night starts."""
+    b, info = cfg.backend, cfg.backend_info
+    total = remaining = 0
+    for domain in domains:
+        for trial in cfg.trials:
+            for name in cfg.treatments:
+                t = trial_dir(cfg.runs_root, b.model, domain.name, name, trial)
+                for skill in domain.skills:
+                    if skill.index not in wanted:
+                        continue
+                    total += 1
+                    key = key_of({"model": b.model, "domain": domain.name, "treatment": name,
+                                  "trial": trial, "skill_index": skill.index})
+                    if not (key in done and step_dir(t, skill.index).is_dir()):
+                        remaining += 1
+    chosen = [TREATMENTS[n] for n in cfg.treatments]
+    venv = " (venv)" if sys.prefix != sys.base_prefix else " (no venv)"
+    url = getattr(b, "base_url", None)
+    out(f"harness start {datetime.now(timezone.utc).isoformat(timespec='seconds')}")
+    out(f"  backend   {b.name}  model {b.model}" + (f"  at {url}" if url else ""))
+    out(f"  model     quantization {info.get('quantization', '?')}  file/digest {info.get('model_digest', '?')}")
+    out(f"  sampling  temperature {info.get('temperature', 'backend default')}  think {info.get('think', 'off')}")
+    out(f"  context   {b.context_tokens} tokens" + (" (matches server)" if hasattr(b, "verify") else ""))
+    out(f"  python    {sys.version.split()[0]}{venv}" + (
+        f"  scikit-learn {_pkg_version('scikit-learn')}  numpy {_pkg_version('numpy')}"
+        if any(t.background == "sklearn" for t in chosen) else ""))
+    if any(t.lang == "lua" for t in chosen):
+        out(f"  lua       {_lua_version()}")
+    out(f"  template  {template_hash()}  check timeout {cfg.check_timeout:g}s")
+    out(f"  plan      {','.join(d.name for d in domains)} x {','.join(cfg.treatments)} x trials "
+        f"{','.join(map(str, cfg.trials))} x skills {','.join(str(s) for s in sorted(wanted))} = {total} steps, "
+        f"{total - remaining} already done, {remaining} to run")
+    out(f"  output    {_rel(cfg.results_path)}, {_rel(cfg.runs_root)}/{b.model}/")
+
+
 def _progress(row):
     head = f"{row['domain']} {row['treatment']} trial {row['trial']} skill {row['skill_index']}/10"
     if row["status"] != "ok":
@@ -156,6 +220,7 @@ def run(cfg, out=print):
             cfg.backend_info = {}
     done = completed_keys(cfg.results_path)
     wanted = {int(s) for s in cfg.skills}
+    _banner(cfg, domains, done, wanted, out)
     # trial is outside treatment so the matched pairs fill evenly if a night runs short
     for domain in domains:
         for trial in cfg.trials:
