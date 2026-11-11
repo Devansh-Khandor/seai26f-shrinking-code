@@ -20,9 +20,18 @@ T7, the human treatment, is not run here. Its rows can be added to the same CSV 
 ## Requirements on the run machine
 
 - Python 3.10+.
-- `scikit-learn` and `numpy`. These are only needed to *run* T3/T4 output. The harness itself is standard library only.
+- The pinned packages in the repo-root `requirements.txt` (scikit-learn, numpy and their dependencies). These are only needed to *run* T3/T4 output. The harness itself is standard library only.
 - Lua 5.4+ or LuaJIT, on `PATH` or set in `HARNESS_LUA`. This is needed to run T5/T6 output and `same`.
 - An LLM backend (see below).
+
+Generated Python runs under the same interpreter as the harness, so use a virtual environment and start the harness with its Python:
+
+```sh
+python -m venv .venv
+.venv/Scripts/python -m pip install -r requirements.txt   # Windows
+.venv/bin/python -m pip install -r requirements.txt       # macOS / Linux
+.venv/Scripts/python -m harness ...                       # or activate the venv and use python
+```
 
 ## Backends
 

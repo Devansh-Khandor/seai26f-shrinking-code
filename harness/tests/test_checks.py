@@ -42,7 +42,7 @@ class TestRunCheck(unittest.TestCase):
         self._tmp.cleanup()
 
     def write(self, name, text):
-        (self.step / name).write_text(text)
+        (self.step / name).write_text(text, encoding="utf-8")
 
     def test_run_python_ok(self):
         self.write("skill_03.py", "import sys\nassert sys.argv[1].endswith('auto93.csv')\n" + PRINT_GOOD)

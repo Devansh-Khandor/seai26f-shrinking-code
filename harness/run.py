@@ -117,7 +117,7 @@ def preflight(cfg):
     if any(t.lang == "lua" for t in chosen) and lua_executable() is None:
         raise SystemExit("T5/T6 need Lua: install lua/luajit or set HARNESS_LUA")
     if any(t.background == "sklearn" for t in chosen) and not python_has_sklearn():
-        raise SystemExit(f"T3/T4 need scikit-learn in {sys.executable}: pip install scikit-learn")
+        raise SystemExit(f"T3/T4 need scikit-learn in {sys.executable}: pip install -r requirements.txt")
 
 
 def _progress(row):
