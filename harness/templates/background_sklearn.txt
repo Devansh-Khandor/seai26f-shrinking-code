@@ -1,1 +1,1 @@
-Use Python 3. scikit-learn (with numpy) is installed and available.
+Use Python 3. scikit-learn (with numpy) is installed and available. No other third-party packages.
