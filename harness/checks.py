@@ -100,7 +100,10 @@ def run_check(step, skill, treatment, csv_path, timeout=120.0):
         start = time.monotonic()
         timed_out = capped = False
         with open(out_path, "wb") as out, open(err_path, "wb") as err:
-            p = subprocess.Popen([exe, name, str(csv_path)], cwd=work, env=_env(work, treatment.lang),
+            # ezr's pathname() treats a path with no "/" as a bare name under ../data/;
+            # forward slashes keep a Windows path intact (Windows accepts them).
+            data_arg = Path(csv_path).as_posix() if treatment.lang == "lua" else str(csv_path)
+            p = subprocess.Popen([exe, name, data_arg], cwd=work, env=_env(work, treatment.lang),
                                  stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                                  start_new_session=(os.name != "nt"))
             while p.poll() is None:

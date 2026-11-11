@@ -42,7 +42,7 @@ Only the backend changes between runs. Everything else stays the same.
 python -m harness --backend ollama --model qwen2.5-coder:14b --context 32768
 
 # Local model through llama.cpp's llama-server (see "llama.cpp setup" below)
-python -m harness --backend llamacpp --model gpt-oss-20b --context 32768 --think medium
+python -m harness --backend llamacpp --model gpt-oss-20b --context 65536 --think medium
 
 # Any OpenAI-compatible API (OpenAI, DeepSeek, LM Studio, vLLM)
 python -m harness --backend openai --model gpt-4.1-mini            # uses OPENAI_API_KEY
@@ -63,7 +63,7 @@ Start the server in its own terminal and leave it running. Replace the placehold
 
 ```powershell
 <llama.cpp dir>\llama-server.exe -m <models dir>\gpt-oss-20b-MXFP4.gguf `
-  -c 32768 -np 1 -ngl 99 --jinja --temp 1.0 --top-p 1.0 --port 8080
+  -c 65536 -np 1 -ngl 99 --jinja --temp 1.0 --top-p 1.0 --port 8080
 ```
 
 - `-c` must equal the harness `--context`. `-np 1` keeps the whole context in one slot (with `-np N` each slot gets `c/N`).

@@ -107,6 +107,17 @@ class TestRunCheck(unittest.TestCase):
         self.assertIn("true", r.stdout)
         self.assertIsNotNone(lua_executable())
 
+    @unittest.skipUnless(shutil.which("lua") or shutil.which("luajit"), "Lua not installed")
+    def test_lua_ezr_csv_opens_given_path(self):
+        # ezr's pathname() treats a path without "/" as a bare name under ../data/,
+        # so a Windows path with only backslashes must not reach it.
+        lua_print = "".join(f"print({line!r})\n".replace("'", '"') for line in GOOD.splitlines())
+        self.write("skill_03.lua", 'local ezr = require("ezr")\nlocal n = 0\n'
+                   'for _ in ezr.csv(arg[1]) do n = n + 1 end\nprint("rows " .. n)\n' + lua_print)
+        r = run_check(self.step, CERTIFY, TREATMENTS["T5"], CARS.csv_path)
+        self.assertTrue(r.runs, r.stderr)
+        self.assertIn("rows 399", r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
