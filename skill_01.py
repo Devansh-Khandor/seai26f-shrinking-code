@@ -13,17 +13,20 @@ import numpy as np
 
 def load_csv(path: str) -> tuple[np.ndarray, list[str]]:
     """Load the CSV file and return a NumPy array of numeric values
-    and a list of column headers."""
+    and a list of column headers. Empty strings are interpreted as NaN."""
     with open(path, newline='') as f:
         reader = csv.reader(f)
         header = next(reader)
         rows = []
         for r in reader:
-            # Convert all values to float; the dataset contains only numeric columns.
-            try:
-                rows.append([float(v) for v in r])
-            except ValueError as exc:
-                raise ValueError(f"Non‑numeric value encountered: {exc}") from exc
+            # Convert all values to float; allow empty fields → NaN
+            row = []
+            for v in r:
+                if v == '':
+                    row.append(np.nan)
+                else:
+                    row.append(float(v))
+            rows.append(row)
         data = np.array(rows, dtype=float)
     return data, header
 
@@ -33,11 +36,11 @@ def compute_summary(data: np.ndarray, header: list[str], col_name: str) -> dict:
     idx = header.index(col_name)
     col = data[:, idx]
     return {
-        "mean": np.mean(col),
-        "median": np.median(col),
-        "std": np.std(col, ddof=1),
-        "min": np.min(col),
-        "max": np.max(col),
+        "mean": np.nanmean(col),
+        "median": np.nanmedian(col),
+        "std": np.nanstd(col, ddof=1),
+        "min": np.nanmin(col),
+        "max": np.nanmax(col),
     }
 
 
@@ -101,6 +104,7 @@ def main():
         weight, mpg, accel = row[header.index("Lbs-")], row[header.index("Mpg+")], row[header.index("Acc+")]
         print(f"Rank {rank}: Vehicle #{idx + 1} → Weight={weight:.2f} Lbs, "
               f"MPG={mpg:.2f}, Accel={accel:.2f}, Score={scores[idx]:.2f}")
+
 
 if __name__ == "__main__":
     main()
