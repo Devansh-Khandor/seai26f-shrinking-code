@@ -103,6 +103,9 @@ Press Ctrl+C at any time to stop. Rerun the **same command** to continue. Finish
 3. `python -m harness.analyze --model <tag>`, then open `results/<tag>/sizing.md`. If T5 at step 10 is near the context limit, raise `--context` if VRAM allows. If it still overflows, stop and decide with the team. Don't trim `ezr.lua`.
 4. Full run: `python -m harness --backend ollama --model <tag> --domains cars --trials 1-3`.
 5. `python -m harness.analyze --model <tag>`.
+6. `python -m harness.tag --model <tag>`, then `git push origin --tags`. This tags every finished trial (see [Tags](#tags)).
+
+To add trials later, run the same command with the new trial numbers, e.g. `--trials 4-10`, then repeat steps 5 and 6. Trials that are already tagged are checked, not retagged.
 
 ## Outputs
 
@@ -116,6 +119,16 @@ Press Ctrl+C at any time to stop. Rerun the **same command** to continue. Finish
   - `same_tables.md`: T2 vs T1, T4 vs T3, T6 vs T5.
   - `pass_rates.md`
   - `sizing.md`
+
+## Tags
+
+The class asks for histograms derivable from the repo's tags, so `python -m harness.tag` turns each finished trial into its own small git history, off every branch: an empty start commit, then one commit per step whose tree is exactly that step's snapshot. A failed step repeats the previous snapshot, as the harness does. Tags are named `<t#>-<domain>-r<trial>-step<k>`, e.g. `t1-cars-r4-step1`.
+
+- Only trials whose ten steps are all finished are tagged. Existing tags are never moved, and a partly tagged trial is an error.
+- After tagging, every tagged trial is re-measured from its tags alone with the same counting rules, and any difference from `runs.csv` is an error.
+- It never pushes. Run `git push origin --tags` yourself.
+
+`git diff --stat t1-cars-r4-step1..t1-cars-r4-step2` shows a step's change, but it also counts comments and blank lines.
 
 ## Measurement rules
 
