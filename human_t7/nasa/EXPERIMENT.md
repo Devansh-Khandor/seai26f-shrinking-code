@@ -142,72 +142,60 @@ The diagram emphasizes selected reusable dependencies, not an exhaustive import 
 
 ## 5. Lines-of-code measurement
 
-### Reported counting convention
+### Source of truth: treatment harness
 
-The recorded measure is **nonblank, non-comment Python source lines** in the module newly introduced at each skill's checkpoint. It includes executable statements, imports, function definitions and non-comment textual lines such as docstrings. It excludes blank lines and standalone comments. The counting script used Python's `tokenize` module and treated any line carrying a `COMMENT` token as excluded; therefore a rare code line with an inline comment would also be excluded under this *exact script*, even though its code portion is executable.
+LOC follows the algorithm in the `treatment-harness` branch's `harness/loc.py` (`code_lines`, `is_test_path`, and `measure_step`). The analysis compares **complete code snapshots at consecutive Git checkpoints**, not just the file introduced for that skill.
 
-This is **new-module LOC**, not the size of the full accumulated repository or a Git diff of all additions and deletions. Changes to an older module after its checkpoint, if any, would need separate accounting for a true per-step repository-wide net-growth metric. Documentation, CSV data and tests outside the measured module are not counted.
+- **Scope:** Python (`.py`) and Lua (`.lua`) files under `human_t7/nasa/`; other file extensions, including Markdown and CSV, are excluded.
+- **Filtering:** For Python, discard blank lines and lines whose stripped text begins with `#`; for Lua, discard blank lines and lines whose stripped text begins with `--`. Keep other stripped lines, including docstrings and lines containing inline comments.
+- **Change detection:** Apply `difflib.SequenceMatcher(None, previous_lines, current_lines, autojunk=False)` to each file separately. `insert` and `replace` contribute current lines to **new LOC**; `delete` and `replace` contribute prior lines to **deleted LOC**.
+- **Tests:** Files in a path component beginning with `test`, or with a stem ending `_test`, contribute their added lines to **test LOC**, separately from implementation LOC.
+- **Total LOC:** Count the filtered lines in all current non-test implementation files.
+- **% new:** `round(100 × new_loc / total_loc, 2)`; use 0% if total LOC is zero.
+- **Initial comparison:** For Step 1, compare `t7-nasa-step1^` with `t7-nasa-step1`; for later steps, compare consecutive `t7-nasa-stepN` tags. This baseline definition follows the recorded NASA audit.
 
-### Reproduce the measured counts
+The primary cross-treatment comparison described by the harness uses **new LOC from Steps 2–10**, excluding the initial skill. The full Steps 1–10 sum is also reported for completeness. The two totals must not be conflated.
 
-Run the following from the repository root. It reads each file directly from its immutable skill tag and does not depend on the working-tree copy:
+### Reproduce the harness-compatible audit
+
+From the repository root, run the checked NASA audit script (if present in the local checkout):
 
 ```bash
-python3 - <<'PY'
-import subprocess
-import tokenize
-from io import BytesIO
-
-files = (
-    'remember.py', 'guess.py', 'certify.py', 'flow.py',
-    'blame.py', 'justify.py', 'choose.py', 'fix.py',
-    'spot.py', 'race.py',
-)
-
-def git_bytes(*arguments):
-    return subprocess.check_output(['git', *arguments])
-
-total = 0
-print(f"{'Step':<6} {'Skill':<12} {'New LOC':>8}")
-print('-' * 30)
-for step, filename in enumerate(files, 1):
-    source = git_bytes(
-        'show',
-        f't7-nasa-step{step}:human_t7/nasa/{filename}',
-    )
-    comment_lines = {
-        token.start[0]
-        for token in tokenize.tokenize(BytesIO(source).readline)
-        if token.type == tokenize.COMMENT
-    }
-    lines = source.decode('utf-8').splitlines()
-    loc = sum(
-        bool(line.strip()) and number not in comment_lines
-        for number, line in enumerate(lines, 1)
-    )
-    total += loc
-    print(f'{step:<6} {filename[:-3].capitalize():<12} {loc:>8}')
-print('-' * 30)
-print(f"{'TOTAL':<19} {total:>8}")
-PY
+python3 human_t7/nasa/audit_nasa_harness_loc.py
 ```
 
-### Recorded LOC sequence
+The script reads Git snapshots and performs the same filtering and `SequenceMatcher` comparison as `harness/loc.py`; it does not alter tags, commits or source code. If using another checkout, make sure this helper has been committed or supplied separately. The authoritative algorithm remains `harness/loc.py` on the `treatment-harness` branch.
 
-| Step | Skill | New LOC | Cumulative new-module LOC |
-|---:|---|---:|---:|
-| 1 | Remember | 124 | 124 |
-| 2 | Guess | 103 | 227 |
-| 3 | Certify | 96 | 323 |
-| 4 | Flow | 112 | 435 |
-| 5 | Blame | 107 | 542 |
-| 6 | Justify | 111 | 653 |
-| 7 | Choose | 145 | 798 |
-| 8 | Fix | 161 | 959 |
-| 9 | Spot | 114 | 1,073 |
-| 10 | Race | 159 | **1,232** |
+To inspect the actual source differences independently:
 
-The mean addition is **123.2 lines per skill**. The visual trend and its interpretation are in [`RESULTS.md`](RESULTS.md#11-the-shrinking-code-question-did-additions-become-smaller).
+```bash
+git diff --numstat t7-nasa-step7 t7-nasa-step8 -- 'human_t7/nasa/*.py'
+```
+
+This Git command provides **physical-line** changes, so its figures need not match the harness's filtered LOC calculation.
+
+### Recorded harness-compatible LOC results
+
+| Step | Skill | New LOC | Deleted LOC | Test LOC | Total LOC | % new |
+|---:|---|---:|---:|---:|---:|---:|
+| 1 | Remember | 127 | 0 | 0 | 127 | 100.00% |
+| 2 | Guess | 103 | 0 | 0 | 230 | 44.78% |
+| 3 | Certify | 96 | 0 | 0 | 326 | 29.45% |
+| 4 | Flow | 112 | 0 | 0 | 438 | 25.57% |
+| 5 | Blame | 107 | 0 | 0 | 545 | 19.63% |
+| 6 | Justify | 111 | 0 | 0 | 656 | 16.92% |
+| 7 | Choose | 145 | 0 | 0 | 801 | 18.10% |
+| 8 | Fix | 161 | 0 | 0 | 962 | 16.74% |
+| 9 | Spot | 114 | 0 | 0 | 1,076 | 10.59% |
+| 10 | Race | 159 | 0 | 0 | 1,235 | 12.87% |
+
+**Full implementation (Steps 1–10): 1,235 new LOC.**  **Primary harness comparison (Steps 2–10): 1,108 new LOC.**  No deleted LOC or separately classified test LOC were detected in the ten-step audit. The mean is **123.5 new LOC per skill** across all ten steps.
+
+### Reconciliation with the earlier count
+
+An earlier file-at-a-time script recorded **1,232 LOC** using Python's `tokenize` comment filtering. The harness audit measured **1,235 LOC**: the entire **three-line difference belongs to Step 1** (`remember.py`, 124 originally versus 127 in the harness). All **Steps 2–10 matched exactly** because each checkpoint added only its own skill module and did not edit prior modules. The harness uses stripped-prefix comment filtering rather than tokenized comment detection. Previous code snapshots and Git tags were preserved without modification.
+
+The graphs and interpretation are maintained in [`RESULTS.md`](RESULTS.md#11-the-shrinking-code-question-did-additions-become-smaller).
 
 ## 6. Execution and reproduction
 
@@ -277,7 +265,7 @@ Detailed console outputs and interpreted findings are in `RESULTS.md` and the de
 5. **Repair feasibility:** The Fix search explores limited, hypothetical setting alternatives; predicted gains do not establish real-world improvements.
 6. **Anomalies versus errors:** Large residuals can arise from genuine variation, insufficient predictors or inaccurate measurement. No record is automatically invalidated.
 7. **Baseline breadth:** Race uses the historical mean and 30 seeded random orderings, not a broad algorithm benchmark or formal statistical comparison.
-8. **Code-growth measurement:** Per-skill new-module LOC is affected by requirement complexity, factoring decisions and the particular counting definition. The single sequence does not isolate a causal effect of reuse.
+8. **Code-growth measurement:** Harness new LOC depends on requirement complexity, refactoring activity and the defined source filtering and diff rules. The single sequence does not isolate a causal effect of reuse.
 9. **Verification depth:** Execution and targeted checks support implementation confidence, but a full requirement-by-requirement acceptance suite and independent replication remain separate work.
 
 ## 8. Final handoff checklist
@@ -286,10 +274,10 @@ Detailed console outputs and interpreted findings are in `RESULTS.md` and the de
 - [x] Ten sequential Git tags created through `t7-nasa-step10`.
 - [x] Ten module entry points executed with successful exit codes.
 - [x] Targeted correctness checks performed during implementation.
-- [x] New-module LOC counted at every skill tag (1,232 total).
+- [x] Harness-compatible new LOC measured at every skill tag (1,235 for Steps 1–10; 1,108 for Steps 2–10).
 - [x] Numerical findings and diagrams organized in `RESULTS.md`.
 - [ ] Formal independent acceptance tests for all 20 customer requirements, if required by evaluation criteria.
 - [ ] Capture exact interpreter/environment versions for archival reproducibility, if needed.
-- [ ] Reconcile LOC methodology with other experimental branches before cross-treatment comparisons.
+- [ ] Apply the same harness counting and checkpoint rules to other experimental branches before cross-treatment comparisons.
 
 For the experimental observations, charts and narrative conclusions, see **[`RESULTS.md`](RESULTS.md)**. For the frozen customer acceptance objectives, see **[`docs/requirements_nasa.md`](../../docs/requirements_nasa.md)**.

@@ -61,10 +61,10 @@ Each script has its own entry point and prints its results. Execute the commands
 ## Recorded outcomes
 
 - **10/10** skill entry points passed the recorded execution smoke test; additional targeted assertions were run during development.
-- **1,232** nonblank, non-comment lines across the ten newly introduced skill modules, using the checkpoint counting convention described in [EXPERIMENT.md](EXPERIMENT.md).
+- **1,235 harness-compatible new implementation LOC** across Steps 1–10; the primary cross-treatment figure for **Steps 2–10 is 1,108 LOC**. The audit found zero deleted LOC and zero separately counted test LOC.
 - On the 19 held-out records, the **historical-mean baseline had lower mean absolute error** than kNN for both effort and defects.
 - Model-guided selection beat the **average** of 30 seeded random trials at inspection budgets **5 and 10**, but not at budget **3**.
-- Per-skill new LOC **did not consistently decrease** over the ten steps.
+- Absolute new LOC **did not consistently decrease**; the percentage of new code generally declined as the total implementation grew.
 
 These are exploratory results, not formal acceptance or statistical-significance claims. See [RESULTS.md](RESULTS.md) for the full tables, diagrams, numerical evidence, and limitations.
 
@@ -77,4 +77,4 @@ git tag --list 't7-nasa-step*' | sort -V
 git show --stat t7-nasa-step10
 ```
 
-For the complete LOC-counting script, test procedure, feature definitions, and experimental limitations, see [EXPERIMENT.md](EXPERIMENT.md).
+For the harness LOC calculation, test procedure, feature definitions, and experimental limitations, see [EXPERIMENT.md](EXPERIMENT.md).
