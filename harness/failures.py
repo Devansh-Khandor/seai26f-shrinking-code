@@ -80,7 +80,7 @@ def categorize(status, check=None, semantic=None, background=None):
             return "evaluator:checker_error", "the semantic checker raised an exception"
         if semantic.status == "fail":
             failed = [f for r in semantic.requests for f in r.failed]
-            no_answer = [f for f in failed if "answer present" in f or "answer format" in f]
+            no_answer = [f for f in failed if "answer present" in f]   # malformed/incomplete = semantic
             crashed = [f for f in failed if "program runs" in f]
             if no_answer and len(no_answer) == len(failed):
                 return "code:no_answer", no_answer[0][:200]
