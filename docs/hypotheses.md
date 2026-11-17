@@ -157,6 +157,20 @@ Any subsequent substantive changes will be documented with a date, rationale, an
 
 Changes introduced after observing experimental results will be identified separately from this original plan.
 
+### Recorded changes
+
+**2026-11-17: treatment protocol v2 (after observing the first 3-trial T1–T6 results).**
+
+- *What changed.*
+  - The third metric (requirement-contract pass rate) was only a format check. It is now complemented by a semantic check of each request: a machine-checked answer per request, compared against reference calculations from the data, plus reruns on controlled copies of the data.
+  - T5/T6 now use the course's Python ezr instead of Lua ezr.
+  - Each failed step gets an evidence-based failure category.
+  - Treatment comparisons use the professor's `same` and `bestRanks` from `stats.py`.
+- *Rationale.* The professor pointed out that a program could pass the format contract while not doing what the customer asked. He also asked that LLM failures be reported and explained.
+- *What did not change.* The 60 frozen customer requests, the skill order, the reuse/no-reuse wording, the LOC measurement and its complete-trial rule.
+- *Status of earlier results.* The v1 results (Lua ezr, format contract only) are kept unchanged as exploratory evidence and are not pooled with v2.
+- *Details.* `harness/README.md`, "Protocol versions" and "The semantic check".
+
 ## 10. Expected Outcome
 
 We predict that the reusable symbolic architecture will generally require less new code as capabilities accumulate and that at least part of this benefit will transfer across all three domains.

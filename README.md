@@ -22,14 +22,15 @@ The ten skills, in order: remember, guess, certify, flow, blame, justify, choose
 |---|---|---|---|
 | T1 / T2 | Plain Python (standard library) | no / yes | Python |
 | T3 / T4 | scikit-learn | no / yes | Python |
-| T5 / T6 | Course `ezr.lua` library | no / yes | Lua |
+| T5 / T6 | Course `ezr.py` library | no / yes | Python |
 | T7 | Human-written | — | — |
 
-T1–T6 are run by an LLM through the [treatment harness](harness/README.md). Each step is one fresh call with no history: the background, the trial's code so far, and the next skill's two requests. Every step's new lines of code are measured and the program is run on the domain CSV.
+T1–T6 are run by an LLM through the [treatment harness](harness/README.md). Each step is one fresh call with no history: the background, the trial's code so far, and the next skill's two requests. Every step's new lines of code are measured, the program is run on the domain CSV, and a semantic check tests whether it actually does what each request asks.
 
 ## Status
 
-- **T1–T6:** complete for all three domains at 3 trials (540 steps, `gpt-oss-20b`, one fixed setup). Running trials 4–10 to reach the pre-registered target of 10.
+- **T1–T6, protocol v1:** complete for all three domains at 3 trials (540 steps, `gpt-oss-20b`, Lua ezr, format contract only). Kept as exploratory results.
+- **T1–T6, protocol v2:** adds a semantic check of every request and uses Python ezr for T5/T6, after the professor's feedback (see [Protocol versions](harness/README.md#protocol-versions)). Runs in progress.
 - **T7 (human):** in progress.
 - **Analysis, slides and report:** in progress.
 
@@ -49,14 +50,14 @@ T1–T6 are run by an LLM through the [treatment harness](harness/README.md). Ea
 
 ## Running
 
-Python 3.10+ for the harness; the reference implementation needs only the standard library.
+Python 3.12+ for the harness (the course's `ezr.py` needs it); the reference implementation needs only the standard library.
 
 ```sh
 # Reference implementation
 python -m shrinking_code.demo --domain cars --skill remember   # any domain / skill
 python -m unittest discover -s tests -v
 
-# Treatment harness (see harness/README.md for setup, backends and Lua)
+# Treatment harness (see harness/README.md for setup and backends)
 python -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
 python -m harness --backend <backend> --model <model> --trials 1-3
 python -m harness.analyze --model <model>
@@ -65,7 +66,13 @@ python -m unittest discover -s harness/tests -t .
 
 ## Results
 
-Treatment results are in [`harness/results/`](harness/results/):
+Treatment results are in [`harness/results/`](harness/results/). Protocol v2 results go to `harness/results/v2/` with the same layout plus:
+
+- `requirements.csv`: the semantic verdict for every request of every step, with the failed checks.
+- `<model>/requirements.md`: request-level semantic pass rates.
+- `diagnoses.csv`: the model's suspected cause for each failed step, kept separate from the evidence-based category.
+
+Protocol v1 files, unchanged:
 
 - `runs.csv`: every step's status, pass/fail checks, new/total lines of code, tokens and timing.
 - `<model>/same_tables.md`: T2 vs T1, T4 vs T3, T6 vs T5 with the course `same` test.

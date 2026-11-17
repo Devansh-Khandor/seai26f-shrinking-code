@@ -1,6 +1,7 @@
 from pathlib import Path
 import re
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -126,8 +127,8 @@ class TestRun(unittest.TestCase):
         self.assertNotIn("FILE: helper_out.py", fake.calls[1])
         self.assertFalse((step_dir(self.trial(), 1) / "state.json").exists())
 
-    def test_preflight_requires_lua_for_ezr(self):
-        with mock.patch("harness.run.lua_executable", return_value=None):
+    def test_preflight_requires_python_312_for_ezr(self):
+        with mock.patch.object(sys, "version_info", (3, 11, 0)):
             with self.assertRaises(SystemExit):
                 self.go(FakeBackend(good_reply), treatments=["T5"])
 
@@ -156,16 +157,13 @@ class TestRun(unittest.TestCase):
         self.assertEqual(rows[1]["new_loc"], "")
 
     def test_vendored_ezr_in_reply_dropped(self):
-        def lua_reply(prompt):
-            skill = int(re.search(r"skill (\d+) of 10", prompt).group(1))
-            return (f"FILE: ezr.lua\n```lua\nlocal x = 1\n```\n"
-                    f"FILE: skill_{skill:02d}.lua\n```lua\nprint(1)\n```\n")
+        def ezr_reply(prompt):
+            return "FILE: ezr.py\n```python\nx = 1\n```\n" + good_reply(prompt)
 
-        with mock.patch("harness.run.lua_executable", return_value="lua"):
-            self.go(FakeBackend(lua_reply), treatments=["T5"], skills=[1])
+        self.go(FakeBackend(ezr_reply), treatments=["T5"], skills=[1])
         t5 = trial_dir(self.root / "runs", "fake", "cars", "T5", 1)
-        self.assertFalse((step_dir(t5, 1) / "ezr.lua").exists())
-        self.assertTrue((step_dir(t5, 1) / "skill_01.lua").exists())
+        self.assertFalse((step_dir(t5, 1) / "ezr.py").exists())
+        self.assertTrue((step_dir(t5, 1) / "skill_01.py").exists())
 
     def test_trial_outer_loop(self):
         fake = FakeBackend(good_reply)

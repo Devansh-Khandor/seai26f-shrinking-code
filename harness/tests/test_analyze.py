@@ -17,11 +17,9 @@ def r(treatment, trial, skill, new_loc, status="ok", runs="True", model="m", pct
 
 
 class TestAnalyze(unittest.TestCase):
-    @unittest.skipUnless(HAS_LUA, "Lua not installed")
     def test_same_identical(self):
         self.assertTrue(same([1, 2, 3, 4, 5], [1, 2, 3, 4, 5]))
 
-    @unittest.skipUnless(HAS_LUA, "Lua not installed")
     def test_same_different(self):
         self.assertFalse(same([1, 2, 3, 4, 5], [50, 60, 70, 80, 90]))
 
@@ -72,12 +70,10 @@ class TestAnalyze(unittest.TestCase):
         rows = [r("T5", 1, 4, "1", est="9000"), r("T5", 2, 4, "1", est="9500")]
         self.assertEqual(sizing(rows)[("cars", "T5", 4)], 9500)
 
-    @unittest.skipUnless(HAS_LUA, "Lua not installed")
     def test_verdict_lower(self):
         self.assertEqual(verdict([1, 2, 3, 2, 1], [50, 60, 70, 80, 90]), "reuse lower (certified)")
         self.assertEqual(verdict([1, 2, 3], [1, 2, 3]), "no certified difference")
 
-    @unittest.skipUnless(HAS_LUA, "Lua not installed")
     def test_write_reports(self):
         rows = [r(t, k, s, str(k * s if t == "T1" else s)) for t in ("T1", "T2")
                 for k in (1, 2, 3) for s in range(1, 11)]

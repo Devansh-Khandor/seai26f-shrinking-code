@@ -65,6 +65,15 @@ class TestTag(unittest.TestCase):
         self.assertEqual(tree_files(self.repo, "t1-cars-r1-step1^"), {})
         self.assertIn("(fake-model)", git(self.repo, "log", "-1", "--format=%s", "t1-cars-r1-step5"))
 
+    def test_protocol_prefix_keeps_v1_and_v2_apart(self):
+        self.fake_trial()
+        tag_runs(MODEL, self.runs, self.csv, repo=self.repo, out=self.out.append, prefix="v2-")
+        tags = git(self.repo, "tag", "-l").split()
+        self.assertEqual(sorted(tags), sorted(tag_name("T1", "cars", 1, i, "v2-") for i in range(1, 11)))
+        self.assertTrue(all(t.startswith("v2-t1-cars-r1-step") for t in tags))
+        self.assertEqual(self.tag(), [("cars", "T1", 1)])  # unprefixed (v1) names are a separate set
+        self.assertEqual(len(git(self.repo, "tag", "-l").split()), 20)
+
     def test_no_branch_or_ref_left_behind(self):
         self.fake_trial()
         self.tag()

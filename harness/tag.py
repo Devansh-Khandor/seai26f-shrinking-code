@@ -1,6 +1,7 @@
 """Git-tag every finished trial so the histograms are derivable from tags. Never calls an LLM.
 
-    python -m harness.tag --model gpt-oss-20b
+    python -m harness.tag --model gpt-oss-20b                 # protocol v2 (default)
+    python -m harness.tag --model gpt-oss-20b --protocol v1   # the original 3-trial runs
     git push origin --tags
 
 Each trial becomes its own small history, off every branch: an empty start
@@ -8,7 +9,8 @@ commit, then one commit per step whose tree is exactly the harness snapshot
 runs/<model>/<domain>/<T#>/trial<k>/stepNN/. A step that failed carries the
 previous snapshot forward, as the harness does. Tags are named
 
-    <t#>-<domain>-r<trial>-step<k>      e.g. t1-cars-r4-step1
+    v2-<t#>-<domain>-r<trial>-step<k>   e.g. v2-t1-cars-r1-step1  (protocol v2)
+    <t#>-<domain>-r<trial>-step<k>      e.g. t1-cars-r4-step1     (protocol v1)
 
 Only trials whose ten steps are all finished are tagged. Existing tags are
 never moved: a trial that is already tagged is checked, not rewritten. After
@@ -36,8 +38,14 @@ class TagError(Exception):
     pass
 
 
-def tag_name(treatment, domain, trial, step):
-    return f"{treatment.lower()}-{domain}-r{trial}-step{step}"
+PROTOCOLS = {  # name: (tag prefix, runs root, results csv)
+    "v1": ("", HARNESS_DIR / "runs", HARNESS_DIR / "results" / "runs.csv"),
+    "v2": ("v2-", HARNESS_DIR / "runs" / "v2", HARNESS_DIR / "results" / "v2" / "runs.csv"),
+}
+
+
+def tag_name(treatment, domain, trial, step, prefix=""):
+    return f"{prefix}{treatment.lower()}-{domain}-r{trial}-step{step}"
 
 
 def git(repo, *args, data=None):
@@ -116,7 +124,7 @@ def message(model, domain, treatment, trial, row):
             f"prompt template {row['prompt_template_hash'] or '-'}.\n")
 
 
-def fast_import_stream(model, ident, trials):
+def fast_import_stream(model, ident, trials, prefix=""):
     """trials: [(domain, treatment, trial, steps, code)] -> bytes for git fast-import."""
     parts = []
 
@@ -149,16 +157,16 @@ def fast_import_stream(model, ident, trials):
                 w(f"M 100644 inline {path}\n")
                 data(code[i][path])
             w("\n")
-            w(f"tag {tag_name(treatment, domain, trial, i)}\nfrom :{mark}\ntagger {ident} {when} +0000\n")
+            w(f"tag {tag_name(treatment, domain, trial, i, prefix)}\nfrom :{mark}\ntagger {ident} {when} +0000\n")
             data(msg)
     return b"".join(parts)
 
 
-def verify_trial(repo, model, domain, treatment, trial, steps):
+def verify_trial(repo, model, domain, treatment, trial, steps, prefix=""):
     """Re-measure one trial from its tags alone; return a list of problems."""
     problems = []
     for i in STEPS:
-        tag = tag_name(treatment, domain, trial, i)
+        tag = tag_name(treatment, domain, trial, i, prefix)
         subject = git(repo, "log", "-1", "--format=%s", tag).decode().strip()
         if not subject.endswith(f"({model})"):
             problems.append(f"{tag}: belongs to another model ({subject})")
@@ -178,7 +186,7 @@ def verify_trial(repo, model, domain, treatment, trial, steps):
     return problems
 
 
-def tag_runs(model, runs_root, results_path, repo=REPO_ROOT, out=print):
+def tag_runs(model, runs_root, results_path, repo=REPO_ROOT, out=print, prefix=""):
     trials = trials_in(load_rows(results_path), model)
     if not trials:
         raise TagError(f"no rows for model {model!r} in {results_path}")
@@ -189,7 +197,7 @@ def tag_runs(model, runs_root, results_path, repo=REPO_ROOT, out=print):
     for key in sorted(trials):
         domain, treatment, trial = key
         steps = trials[key]
-        names = [tag_name(treatment, domain, trial, i) for i in STEPS]
+        names = [tag_name(treatment, domain, trial, i, prefix) for i in STEPS]
         present = [n for n in names if n in have]
         if len(present) == len(names):
             already.append(key)
@@ -203,12 +211,12 @@ def tag_runs(model, runs_root, results_path, repo=REPO_ROOT, out=print):
                         snapshots(runs_root, model, domain, treatment, trial, steps)))
 
     if new:
-        git(repo, "fast-import", "--quiet", data=fast_import_stream(model, ident, new))
+        git(repo, "fast-import", "--quiet", data=fast_import_stream(model, ident, new, prefix))
         git(repo, "update-ref", "-d", TMP_REF)
 
     problems = []
     for domain, treatment, trial in already + [n[:3] for n in new]:
-        problems += verify_trial(repo, model, domain, treatment, trial, trials[(domain, treatment, trial)])
+        problems += verify_trial(repo, model, domain, treatment, trial, trials[(domain, treatment, trial)], prefix)
 
     out(f"tagged {len(new)} new trial(s) ({10 * len(new)} tags), "
         f"{len(already)} already tagged, {len(unfinished)} not finished")
@@ -227,11 +235,13 @@ def tag_runs(model, runs_root, results_path, repo=REPO_ROOT, out=print):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m harness.tag", description=__doc__.split("\n")[0])
     ap.add_argument("--model", required=True)
-    ap.add_argument("--runs-root", type=Path, default=HARNESS_DIR / "runs")
-    ap.add_argument("--results", type=Path, default=HARNESS_DIR / "results" / "runs.csv")
+    ap.add_argument("--protocol", choices=sorted(PROTOCOLS), default="v2")
+    ap.add_argument("--runs-root", type=Path)
+    ap.add_argument("--results", type=Path)
     a = ap.parse_args(argv)
+    prefix, runs_root, results = PROTOCOLS[a.protocol]
     try:
-        tag_runs(a.model, a.runs_root, a.results)
+        tag_runs(a.model, a.runs_root or runs_root, a.results or results, prefix=prefix)
     except TagError as e:
         sys.exit(f"error: {e}")
 

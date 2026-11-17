@@ -18,7 +18,8 @@ def prompt(t, prior=None):
 class TestPrompts(unittest.TestCase):
     def test_treatment_table(self):
         self.assertEqual(TREATMENTS["T4"], Treatment("T4", "sklearn", True, "python"))
-        self.assertEqual(TREATMENTS["T5"].lang, "lua")
+        self.assertEqual(TREATMENTS["T5"], Treatment("T5", "ezr", False, "python"))
+        self.assertEqual(TREATMENTS["T6"], Treatment("T6", "ezr", True, "python"))
         self.assertEqual(sorted(TREATMENTS), ["T1", "T2", "T3", "T4", "T5", "T6"])
 
     def test_requests_verbatim(self):
@@ -35,10 +36,11 @@ class TestPrompts(unittest.TestCase):
 
     def test_ezr_background(self):
         t5, t1 = prompt("T5"), prompt("T1")
-        for s in ("function same(", 'require("ezr")', "skill_03.lua"):
+        for s in ("def same(xs", "import ezr", "FILE: ezr.py"):
             self.assertIn(s, t5)
             self.assertNotIn(s, t1)
         self.assertIn("skill_03.py", t1)
+        self.assertIn("skill_03.py", t5)
 
     def test_sklearn_background(self):
         self.assertIn("scikit-learn", prompt("T3"))

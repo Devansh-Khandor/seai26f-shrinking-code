@@ -3,3 +3,11 @@ MIT license, (c) 2026 Tim Menzies <timm@ieee.org>.
 
 91f5aebc8d52ff9631ddd08c0156b00dec77c8d261852ea7bed0f4d4e16580af  ezr.lua
 57f662fada19fffcf1fbe77e1899d0c8f0ec4e5411fc6416f0e6dbbc401baf16  ezr-lib.lua
+
+python/ezr.py (T5/T6 from protocol v2): copied unchanged from timm/ezr ezr.py at commit e2d95ae.
+MIT license, (c) 2026 Tim Menzies <timm@ieee.org>. Needs Python 3.12+.
+
+1a722edfa996c0fb5c00fafa6c1d454a04d32aef56fed98c097e5dbfd91edec1  python/ezr.py
+
+harness/vendor_stats.py: same() and bestRanks() copied unchanged from timm/icse27theories
+paper/stats.py at commit 8258e96 (a verbatim slice of timm/ezr); only spread_of() is added.

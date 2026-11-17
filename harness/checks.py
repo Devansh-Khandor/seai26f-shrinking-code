@@ -15,7 +15,7 @@ import sys
 import tempfile
 import time
 
-from harness.prompts import VENDOR_DIR, entry_name
+from harness.prompts import EZR_PY_DIR, VENDOR_DIR, entry_name
 
 MAX_OUTPUT = 20_000          # characters kept in CheckResult / check.txt
 CAP_BYTES = 2_000_000        # a program printing more than this is killed
@@ -58,9 +58,12 @@ def contract_ok(stdout, request_ids):
     return True
 
 
-def _env(workdir, lang):
+def _env(workdir, lang, background=None):
     env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
     env.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8", MPLBACKEND="Agg")
+    env.pop("PYTHONPATH", None)
+    if lang == "python" and background == "ezr":
+        env["PYTHONPATH"] = str(EZR_PY_DIR)
     if lang == "lua":
         env["LUA_PATH"] = env["LUA_PATH_5_4"] = f"{VENDOR_DIR}/?.lua;{workdir}/?.lua;;"
     return env
@@ -103,7 +106,7 @@ def run_check(step, skill, treatment, csv_path, timeout=120.0):
             # ezr's pathname() treats a path with no "/" as a bare name under ../data/;
             # forward slashes keep a Windows path intact (Windows accepts them).
             data_arg = Path(csv_path).as_posix() if treatment.lang == "lua" else str(csv_path)
-            p = subprocess.Popen([exe, name, data_arg], cwd=work, env=_env(work, treatment.lang),
+            p = subprocess.Popen([exe, name, data_arg], cwd=work, env=_env(work, treatment.lang, treatment.background),
                                  stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                                  start_new_session=(os.name != "nt"))
             while p.poll() is None:
