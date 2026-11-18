@@ -161,6 +161,13 @@ The professor's point was that the format contract (tier 2) passes programs that
 
 This is *tested* correctness: a finite set of checks, not a proof. `tests/reference_solution.py` is an independent, known-good solution to all 60 requests. It deliberately uses different aggregates, distances and tests than the oracle, and it passes every check. `tests/test_semantic.py` feeds well-formatted wrong answers for every kind of request, plus hard-coded, leaky, peeking and future-reading programs, and each one must fail.
 
+**Re-grading.** If a checker fix lands after steps have run, `python -m harness.regrade --model <tag> [--skills 5,6 ...]` re-runs each selected step's saved program (on the domain CSV and every controlled copy) with the current checker and replaces its semantic verdict, failure category and request rows. It makes no LLM calls and changes no prompt, reply, code or LOC. Only steps whose program ran are re-graded. The previous CSVs are kept as `*.pre-regrade.csv`, and every changed verdict is logged in `regrade.txt`. Don't run it while a harness run is writing to the same results.
+
+Checker fixes made this way during the v2 run:
+
+- `justify_pair` (CAR-12, NASA-12, APACHE-12): the format text says `"preferred": a or b`, so a literal `"a"`/`"b"` is read as those rows.
+- `blame_rank` / `blame_contrast` (Blame): the strongest column is judged among all non-goal columns *or* among inputs only, since the protocol says `X` columns are not inputs.
+
 ## Failure categories
 
 `failure_category` comes from evidence only (`harness/failures.py`): the status, the exit code, the last traceback line and the semantic result. The part before the colon says whose problem it is:

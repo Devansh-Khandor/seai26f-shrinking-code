@@ -543,6 +543,13 @@ def _stream_summary(c):
 
 # Blame ---------------------------------------------------------------------
 
+def _top3(data, scores):
+    """Top 3 columns among all non-goal columns, or among inputs only: the protocol says X columns are not
+    inputs, so a program that leaves them out of its ranking must be judged against the inputs alone."""
+    inputs = set(data.inputs())
+    return O.top_k(scores, 3) | O.top_k({f: v for f, v in scores.items() if f in inputs}, 3)
+
+
 @kind("blame_rank", '{{"poor": [row numbers with unusually poor {outcome}, at least 5], "ranking": [non-goal column '
       'names, most strongly associated with poor {outcome} first, at least 3]}}')
 def _blame_rank(c):
@@ -560,8 +567,8 @@ def _blame_rank(c):
         raise SchemaError("ranking needs at least 3 distinct columns")
     rank = [column(c.data, f, set(feats), "ranking entry") for f in rank]
     rest = [r for r in range(1, c.data.n + 1) if r not in set(poor)]
-    by_delta = O.top_k({f: O.association(c.data, f, poor, rest) for f in feats}, 3)
-    by_rho = O.top_k({f: O.correlation(c.data, f, o) for f in feats}, 3)
+    by_delta = _top3(c.data, {f: O.association(c.data, f, poor, rest) for f in feats})
+    by_rho = _top3(c.data, {f: O.correlation(c.data, f, o) for f in feats})
     c.check("top-ranked column is strongly associated", rank[0] in by_delta | by_rho,
             f"{rank[0]} is not in the top 3 by Cliff's delta {sorted(by_delta)} or Spearman {sorted(by_rho)}")
 
@@ -616,7 +623,7 @@ def _blame_contrast(c):
                 want = f"mode {sorted(modes)}"
             c.check(f"{f} {side} value", ok, f"{f} {side}={v!r}, data give {want}")
     first = column(c.data, diffs[0]["feature"], set(feats))
-    by_delta = O.top_k({f: O.association(c.data, f, bad, good) for f in feats}, 3)
+    by_delta = _top3(c.data, {f: O.association(c.data, f, bad, good) for f in feats})
     c.check("biggest difference first", first in by_delta, f"{first} is not in the top 3 by Cliff's delta {sorted(by_delta)}")
 
 
@@ -701,11 +708,15 @@ def _justify_pair(c):
     a, b = row(c.data, need(c.ans, "a"), "a"), row(c.data, need(c.ans, "b"), "b")
     if a == b:
         raise SchemaError("a and b must differ")
-    pref = row(c.data, need(c.ans, "preferred"), "preferred")
+    # The format text says `"preferred": a or b` and keys scores by "<a>"; read a literal "a"/"b" as those rows.
+    alias = {"a": a, "b": b}
+    pv = need(c.ans, "preferred")
+    pref = alias[pv] if isinstance(pv, str) and pv in alias else row(c.data, pv, "preferred")
     if pref not in (a, b):
         raise SchemaError("preferred must be a or b")
     other = b if pref == a else a
-    sc = row_map(c.data, need(c.ans, "scores", "dict"), "scores")
+    raw = need(c.ans, "scores", "dict")
+    sc = row_map(c.data, {str(alias.get(k, k)): v for k, v in raw.items()}, "scores")
     if set(sc) != {a, b}:
         raise SchemaError("scores must have exactly a and b")
     c.check("preferred has the higher score", num(sc[pref]) > num(sc[other]), "the preferred row's score is not higher")

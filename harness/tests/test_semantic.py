@@ -93,6 +93,37 @@ class TestKnownGood(unittest.TestCase):
                         self.assertIn(r.id, got)
                         self.assertEqual(failures(r.id, got[r.id]), [])
 
+    def test_justify_pair_accepts_a_and_b_as_names(self):
+        # The format text says `"preferred": a or b` and keys scores by "<a>"; models take that literally.
+        for rid in ("CAR-12", "NASA-12", "APACHE-12"):
+            with self.subTest(request=rid):
+                _, a = answer(rid)
+                name = lambda r: "a" if int(r) == int(a["a"]) else "b"
+                a["scores"] = {name(k): v for k, v in a["scores"].items()}
+                a["preferred"] = name(a["preferred"])
+                self.assertEqual(failures(rid, a), [])
+
+    def test_blame_ranking_may_leave_out_x_columns(self):
+        # X columns (idX, centerX, MonthsX) are not inputs, so a ranking of inputs only is judged among inputs.
+        for rid in ("NASA-09", "CAR-09"):
+            with self.subTest(request=rid):
+                d, a = answer(rid)
+                data, o = DATA[d], A.REQUESTS[rid][1]["outcome"]
+                rest = [r for r in range(1, data.n + 1) if r not in set(a["poor"])]
+                sc = {f: O.association(data, f, a["poor"], rest) or 0 for f in data.inputs()}
+                a["ranking"] = sorted(sc, key=lambda f: -sc[f])[:3]
+                self.assertEqual(failures(rid, a), [])
+        d, a = answer("NASA-10")
+        data = DATA[d]
+
+        def typical(f, rs):
+            vs = data.values(f, rs)
+            return O.mean(vs) if data.is_numeric(f) else max(sorted(set(vs)), key=vs.count)
+        sc = {f: O.association(data, f, a["bad"], a["good"]) or 0 for f in data.inputs()}
+        a["differences"] = [{"feature": f, "bad": typical(f, a["bad"]), "good": typical(f, a["good"])}
+                            for f in sorted(sc, key=lambda f: -sc[f])[:3]]
+        self.assertEqual(failures("NASA-10", a), [])
+
 
 class TestWrongAnswersFail(unittest.TestCase):
     """Each mutation keeps the format valid but makes the answer wrong."""
