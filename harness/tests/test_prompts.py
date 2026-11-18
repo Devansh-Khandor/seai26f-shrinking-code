@@ -57,6 +57,12 @@ class TestPrompts(unittest.TestCase):
         self.assertIn("== <ID> ==", p)
         self.assertIn("DELETE:", p)
 
+    def test_missing_value_rule(self):
+        # auto93 has "?" cells; the oracle keeps those rows, so the prompt must say so.
+        from harness import oracle
+        self.assertEqual(oracle.load(CARS.csv_path).n, 398)
+        self.assertIn("A cell containing `?` is a missing value. Keep every row", prompt("T1"))
+
     def test_csv_preview(self):
         lines = csv_preview(CARS.csv_path).splitlines()
         self.assertTrue(lines[0].startswith("Clndrs,Volume"))
