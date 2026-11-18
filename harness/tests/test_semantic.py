@@ -355,6 +355,26 @@ class TestControlledRuns(unittest.TestCase):
         self.assertEqual(car03.status, "fail")
         self.assertTrue(any("held-out targets not used" in f for f in car03.failed), car03.failed)
 
+    def test_other_goal_as_input_is_not_leakage(self):
+        # Predicting Mpg+ from a held-out car's Lbs- is allowed: only Mpg+ is unknown.
+        # The mask rerun for CAR-03 must therefore leave Lbs- alone (and vice versa).
+        def fit(path):
+            data = O.load(path)
+            ho = set(O.held_out(data.n))
+            tr = [r for r in range(1, data.n + 1) if r not in ho]
+            xs, ys = [data.value(r, "Lbs-") for r in tr], [data.value(r, "Mpg+") for r in tr]
+            mx, my = O.mean(xs), O.mean(ys)
+            b = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sum((x - mx) ** 2 for x in xs)
+            preds = {str(r): my + b * (data.value(r, "Lbs-") - mx) for r in sorted(ho)}
+            mae = O.mean([abs(p - data.value(int(r), "Mpg+")) for r, p in preds.items()])
+            out = ref_stdout(path, 2).splitlines()
+            out = [ln if not ln.startswith("ANSWER CAR-03") else
+                   "ANSWER CAR-03 " + json.dumps({"predictions": preds, "mae": mae}) for ln in out]
+            return "\n".join(out) + "\n"
+        sem = self.run_eval("cars", 2, fit(DOMAINS["cars"].csv_path), lambda p: result(fit(p)))
+        self.assertEqual(sem.status, "pass", [r.failed for r in sem.requests])
+        self.assertEqual(set(sem.runs), {"base", "shuffled", "mask Lbs-", "mask Mpg+"})
+
     def test_peeking_at_goals_is_caught(self):
         def peek(path):
             data = O.load(path)

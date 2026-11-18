@@ -153,7 +153,7 @@ The professor's point was that the format contract (tier 2) passes programs that
 | Rerun | What changes | What it catches |
 |---|---|---|
 | `shuffled` (every skill) | rows in a fixed different order; every check repeated | hard-coded answers |
-| `mask` (Guess, Race) | held-out target values replaced by absurd ones | using held-out targets (leakage) |
+| `mask` (Guess, Race) | held-out target values replaced by absurd ones, one copy per target (other columns, including other goals, stay as they are) | using held-out targets (leakage) |
 | `future` (Flow) | later arrivals' goals pushed far beyond the observed range | reading future arrivals |
 | `honeypot` (Choose, Race) | six planted rows with ideal goals but middling inputs | looking at goals outside the budget |
 

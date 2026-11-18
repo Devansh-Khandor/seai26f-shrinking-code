@@ -173,28 +173,41 @@ def _evaluate(rids, csv_path, base_result, rerun):
         if not any(name.endswith("answer format") and not ok for name, ok, _ in c.items):
             base_ctx[r] = c
     runs = {"base": "ran"}
+    jobs = []   # (run kind, key in `runs`, requests judged, data maker)
     for run in ["shuffled"] + A.runs_needed(rids):
         wanted = [r for r in rids if run == "shuffled" or run in A.KINDS[A.REQUESTS[r][0]][2]]
         wanted = [r for r in wanted if r in base_ctx]
         if not wanted:
             continue
-        data, extra = _make(run, base_data, wanted)
+        if run == "mask":
+            # One masked copy per target: a model for one target may legitimately use the
+            # held-out rows' *other* goal values as inputs, so those must stay untouched.
+            by_target = {}
+            for r in wanted:
+                by_target.setdefault(A.REQUESTS[r][1]["target"], []).append(r)
+            for t, rs in sorted(by_target.items()):
+                key = "mask" if len(by_target) == 1 else f"mask {t}"
+                jobs.append((run, key, rs, lambda t=t: masked(base_data, t)))
+        else:
+            jobs.append((run, run, wanted, lambda run=run, wanted=wanted: _make(run, base_data, wanted)))
+    for run, key, wanted, make in jobs:
+        data, extra = make()
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / Path(csv_path).name
             path.write_text(data.text(), encoding="utf-8")
             res = rerun(path)
         if res.timed_out:
-            runs[run] = "timed out"
+            runs[key] = "timed out"
             for r in wanted:
                 notes[r].append(f"{run}: program timed out on the controlled copy")
             continue
         if not res.runs:
-            runs[run] = "crashed"
+            runs[key] = "crashed"
             for r in wanted:
                 items[r].append((f"{run}:program runs", False,
                                  f"crashed on the {run} copy of the data: {res.stderr.strip()[-300:]}"))
             continue
-        runs[run] = "ran"
+        runs[key] = "ran"
         new_ans = A.parse_answers(res.stdout)
         for r in wanted:
             a = new_ans.get(r)
