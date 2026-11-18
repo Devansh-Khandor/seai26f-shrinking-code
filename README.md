@@ -71,6 +71,7 @@ Treatment results are in [`harness/results/`](harness/results/). Protocol v2 res
 - `requirements.csv`: the semantic verdict for every request of every step, with the failed checks.
 - `<model>/requirements.md`: request-level semantic pass rates.
 - `diagnoses.csv`: the model's suspected cause for each failed step, kept separate from the evidence-based category.
+- `gpt-oss-20b-3trials.zip`: every prompt, reply, code snapshot, program output and semantic evidence of the v2 run.
 
 Protocol v1 files, unchanged:
 
