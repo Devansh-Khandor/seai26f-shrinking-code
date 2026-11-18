@@ -105,3 +105,79 @@ The observed association does not establish causation.
   deterministic splitting, and leakage safeguards tested.
 - APACHE-04 pair validation and uncertainty outputs checked.
 - Step 2 demonstration executed successfully.
+
+## Step 3: Certify
+
+Requirements: APACHE-05 and APACHE-06.
+
+### Statistical Method
+
+Configurations were divided by the value of each binary setting.
+
+For each comparison, we calculated:
+- Group counts, means, and medians.
+- Cohen's d (signed standardized mean difference).
+- Cliff's delta (signed dominance effect).
+- Two-sample KS statistic.
+- Two-sided permutation-test p-value using 2,000 seeded
+  permutations (seed 42).
+
+Differences are observational and do not establish causation.
+
+### APACHE-05: KeepAlive Comparison
+
+| Metric | Disabled | Enabled |
+|---|---:|---:|
+| Configurations | 96 | 96 |
+| Mean performance | 1087.19 | 1768.12 |
+| Median performance | 1065 | 1890 |
+
+Statistical results:
+
+- Mean difference (enabled - disabled): +680.94
+- Cohen's d: +2.0316
+- Cliff's delta: +0.8130
+- KS statistic: 0.6771
+- Permutation p-value: 0.0005
+
+KeepAlive-disabled configurations have substantially lower
+recorded performance values.
+
+### APACHE-06: Access Logging Comparison
+
+| Metric | Disabled | Enabled |
+|---|---:|---:|
+| Configurations | 96 | 96 |
+| Mean performance | 1501.25 | 1354.06 |
+| Median performance | 1245 | 1200 |
+
+Statistical results:
+
+- Mean difference (enabled - disabled): -147.19
+- Cohen's d: -0.3110
+- Cliff's delta: -0.2161
+- KS statistic: 0.1979
+- Permutation p-value: 0.0370
+
+Access-logging-enabled configurations have somewhat lower
+recorded performance values.
+
+The effect is more modest than for KeepAlive, and the
+permutation p-value is unadjusted for multiple comparisons.
+
+### Limitations
+
+- Observational comparisons cannot establish causality.
+- Server settings may be associated with other settings.
+- Permutation tests here are exploratory and do not
+  control for possible confounding.
+- Multiple comparisons require caution.
+- No repeated measurements of identical configurations
+  are available to directly estimate benchmark noise.
+
+### Verification
+
+- The complete Apache test suite passed 27/27 tests.
+- Step 3 executed successfully.
+- Tests cover grouping, effect-size calculations,
+  distribution comparisons, and deterministic permutation tests.
