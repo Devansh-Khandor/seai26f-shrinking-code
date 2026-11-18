@@ -756,3 +756,44 @@ The paired bootstrap used 2,000 seeded resamples of the
   an independent hyperparameter-selection procedure.
 - Prediction and selection improvements are empirical
   findings for the available historical measurements.
+
+## Final Cumulative LOC Audit
+
+The read-only audit compared filtered implementation-source
+snapshots at Git tags t7-apache-step1 through t7-apache-step10.
+
+| Step | Skill | New LOC | Deleted LOC | Cumulative LOC |
+|---:|---|---:|---:|---:|
+| 1 | Remember | 162 | 0 | 162 |
+| 2 | Guess | 210 | 0 | 372 |
+| 3 | Certify | 133 | 0 | 505 |
+| 4 | Flow | 173 | 0 | 678 |
+| 5 | Blame | 168 | 0 | 846 |
+| 6 | Justify | 216 | 0 | 1062 |
+| 7 | Choose | 182 | 0 | 1244 |
+| 8 | Fix | 182 | 0 | 1426 |
+| 9 | Spot | 205 | 0 | 1631 |
+| 10 | Race | 244 | 0 | 1875 |
+
+### Primary Research Metric
+
+**New implementation LOC, Steps 2-10: 1713.**
+
+Additional measurements:
+
+- Total new implementation LOC, Steps 1-10: 1875.
+- Deleted implementation LOC: 0.
+- Separately counted new test LOC: 1662.
+- Final cumulative implementation LOC: 1875.
+
+The final cumulative LOC was independently verified by
+counting filtered lines across the ten implementation modules.
+
+The original tagged checkpoints remain unchanged.
+
+Absolute added LOC did not consistently shrink across skills.
+Relative new LOC as a percentage of the cumulative
+implementation generally declined.
+
+See EXPERIMENT.md for the counting method, reproduction
+instructions, and study limitations.

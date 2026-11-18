@@ -65,3 +65,27 @@ One cumulative T7 implementation run is required.
 
 The tests provide behavioral checks but are not proof
 of universal semantic correctness.
+
+## Final Experiment Summary
+
+The cumulative Apache T7 implementation covers all ten
+skills and twenty frozen requirements.
+
+- Final automated test result: 113/113 passing.
+- Final implementation checkpoint: `t7-apache-step10`.
+- Total new implementation LOC: 1875.
+- Primary new LOC for Steps 2-10: 1713.
+- Deleted implementation LOC: 0.
+- Separately measured new test LOC: 1662.
+
+Detailed results: [RESULTS.md](RESULTS.md)
+
+Protocol, limitations, and reproducibility:
+[EXPERIMENT.md](EXPERIMENT.md)
+
+Read-only LOC auditor:
+[`audit_apache_harness_loc.py`](audit_apache_harness_loc.py)
+
+T7 is one cumulative human-directed, AI-assisted
+implementation sequence rather than a collection of
+independent treatment repetitions.
