@@ -28,6 +28,7 @@ Frozen requirements: `docs/requirements_apache.md`
 | 7 | Choose | APACHE-13/14 | choose.py | Implemented |
 | 8 | Fix | APACHE-15/16 | fix.py | Implemented |
 | 9 | Spot | APACHE-17/18 | spot.py | Implemented |
+| 10 | Race | APACHE-19/20 | race.py | Implemented |
 
 Later skills will reuse earlier functionality.
 

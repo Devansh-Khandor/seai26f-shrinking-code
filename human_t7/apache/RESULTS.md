@@ -662,3 +662,97 @@ The two methods detect different forms of unusual behavior.
 - Anomaly flags do not establish a server fault.
 - No repeated measurements of identical configurations
   are available to directly estimate benchmark noise.
+
+## Step 10: Race
+
+Requirements: APACHE-19 and APACHE-20.
+
+### Experimental Setup
+
+- Historical training configurations: 154.
+- Held-out evaluation configurations: 38.
+- Deterministic train/test split: seed 42.
+- Candidate selection: fixed five-nearest-neighbor prediction plan.
+- Random baseline: 30 seeded random inspection orders.
+- Inspection budgets: 5, 10, and 20.
+- Both selection strategies use the same held-out candidate pool.
+- Lower Performance- values are better.
+
+### APACHE-19: Model-Guided vs Random Selection
+
+| Budget | Guided best | Random mean | Random median | Random SD | Guided W/T/L |
+|---:|---:|---:|---:|---:|---|
+| 5 | 900 | 1022 | 960 | 214.31 | 21/5/4 |
+| 10 | 840 | 930 | 930 | 81.49 | 23/7/0 |
+| 20 | 840 | 877 | 840 | 42.92 | 14/16/0 |
+
+W/T/L counts the 30 trials in which the guided result
+was better than, tied with, or worse than random selection.
+
+Random-selection ranges:
+
+| Budget | Random minimum | Random maximum |
+|---:|---:|---:|
+| 5 | 840 | 1980 |
+| 10 | 840 | 1170 |
+| 20 | 840 | 960 |
+
+The full held-out candidate pool's minimum is 840.
+The model-guided plan discovered this value after six
+configuration inspections.
+
+The model-guided strategy achieved a better result than
+the mean random-selection outcome at every evaluated budget.
+
+This does not establish superiority in every random trial
+or on independently sampled datasets.
+
+### APACHE-20: Prediction Baseline Comparison
+
+| Metric | Result |
+|---|---:|
+| Held-out observations | 38 |
+| Five-nearest-neighbor MAE | 174.79 |
+| Historical-mean baseline MAE | 484.05 |
+| Absolute MAE improvement | 309.26 |
+| Relative MAE improvement | 63.9% |
+| kNN better on individual records | 34 |
+| Equal absolute errors | 0 |
+| Historical-mean baseline better | 4 |
+
+Exploratory paired-bootstrap interval for the difference
+in mean absolute error (baseline minus kNN):
+
+    [+242.94, +376.06]
+
+The paired bootstrap used 2,000 seeded resamples of the
+38 per-record error differences.
+
+### Verification
+
+- Complete Apache test suite: 113/113 tests passed.
+- Random trials were reproducible.
+- Both selection strategies used identical candidate pools
+  and inspection budgets.
+- Random results at different budgets were derived from
+  the same inspection order within each trial.
+- At a full-pool budget, both approaches reach the same
+  retrospective optimum.
+- Win/tie/loss totals were checked against trial counts.
+- Paired error calculations and bootstrap reproducibility
+  were tested.
+- Prediction MAEs reconciled with the earlier Guess results.
+
+### Limitations
+
+- Only one deterministic training/test split was evaluated.
+- Thirty random inspection orders are not thirty
+  independent learning-experiment replications.
+- Random-trial variability measures selection-order
+  variability for this fixed candidate pool.
+- Bootstrap uncertainty does not account for different
+  training samples, datasets, or deployment conditions.
+- The five-nearest-neighbor strategy was not tuned through
+  an independent hyperparameter-selection procedure.
+- Prediction and selection improvements are empirical
+  findings for the available historical measurements.
