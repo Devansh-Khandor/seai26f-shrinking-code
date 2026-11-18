@@ -477,3 +477,91 @@ after examining 6 of the 38 candidate configurations
   does not establish statistically reliable superiority.
 - The benchmark simulation reveals existing measurements;
   no new Apache server benchmarks were executed.
+
+## Step 8: Fix
+
+Requirements: APACHE-15 and APACHE-16.
+
+### Method
+
+- Reused the deterministic 154/38 training and held-out split.
+- Selected the worst measured held-out configuration as
+  the source requiring repair.
+- Searched historically observed Apache configurations
+  as potential valid alternatives.
+- Used five-nearest-neighbor regression to estimate
+  performance for source and alternative configurations.
+- Excluded a historical row from its own prediction.
+- Never modified the constant `base` setting.
+- Did not use alternative held-out outcomes in predictions.
+- Restricted changes to eight adjustable binary settings.
+
+### Source Configuration
+
+| Metric | Value |
+|---|---:|
+| CSV row | 109 |
+| Recorded performance | 2370 |
+| Predicted performance | 2088 |
+
+### APACHE-15: Small Predicted Repair
+
+Maximum permitted setting changes: 2.
+
+Qualifying predicted-improvement alternatives: 31.
+
+| Metric | Result |
+|---|---:|
+| Recommended CSV row | 63 |
+| Number of setting changes | 1 |
+| Changed setting | handle: 0 -> 1 |
+| Alternative predicted performance | 1188 |
+| Predicted improvement | 900 |
+| Alternative neighbor SD | 124.78 |
+
+The recommended alternative is an observed configuration,
+not an artificially generated combination.
+
+The predicted improvement is approximately 43.1% relative
+to the source predicted performance.
+
+### APACHE-16: Minimum Changes to Target
+
+Specified demonstration target: Performance- <= 1200.
+
+Qualifying predicted-to-meet-target alternatives: 81.
+
+| Metric | Result |
+|---|---:|
+| Recommended CSV row | 63 |
+| Number of setting changes | 1 |
+| Changed setting | handle: 0 -> 1 |
+| Source predicted performance | 2088 |
+| Alternative predicted performance | 1188 |
+| Predicted improvement | 900 |
+
+A single setting change reaches the specified predicted
+target. Since the source prediction exceeds the target,
+one is the minimum possible positive number of edits.
+
+### Verification
+
+- Complete Apache test suite: 86/86 tests passed.
+- Valid historically observed alternatives were verified.
+- Identical configurations and the source itself were
+  excluded from repair alternatives.
+- Constant `base` modifications were prohibited.
+- Self-prediction was excluded for training records.
+- Repair recommendations were invariant to changes in
+  held-out alternative target values.
+- Minimum edit counts and target satisfaction were tested.
+- Step 8 demonstration executed successfully.
+
+### Limitations
+
+- The 1200 performance target is an illustrative choice.
+- Predicted improvements are not performance guarantees.
+- A fresh benchmark is necessary to confirm an improvement.
+- The source is chosen using its known measured performance.
+- Repair recommendations depend on the fixed historical
+  prediction model and the available observed configurations.
