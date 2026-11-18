@@ -565,3 +565,100 @@ one is the minimum possible positive number of edits.
 - The source is chosen using its known measured performance.
 - Repair recommendations depend on the fixed historical
   prediction model and the available observed configurations.
+
+## Step 9: Spot
+
+Requirements: APACHE-17 and APACHE-18.
+
+### Method
+
+- Reused the deterministic 154/38 training and held-out split.
+- Used five-nearest-neighbor regression and normalized
+  Hamming distance over eight adjustable settings.
+- Calibrated both anomaly thresholds from training-only
+  leave-one-out scores.
+- Thresholds use nearest-rank 90th percentiles.
+- A score must strictly exceed its threshold to be flagged.
+- Test records are never included in their own neighbor sets.
+
+### APACHE-17: Unexpected Performance
+
+Performance anomaly score:
+
+    absolute residual = abs(measured - predicted)
+
+Training-calibrated absolute residual threshold: 294.
+
+Flagged held-out records: 9 of 38.
+
+Five largest absolute residuals:
+
+| CSV row | Measured | Predicted | Residual | Absolute error |
+|---:|---:|---:|---:|---:|
+| 144 | 2220 | 1614 | +606 | 606 |
+| 130 | 2130 | 1656 | +474 | 474 |
+| 29 | 2100 | 1752 | +348 | 348 |
+| 174 | 2280 | 1944 | +336 | 336 |
+| 176 | 2160 | 1824 | +336 | 336 |
+
+All five configurations exceed the training-derived
+absolute residual threshold.
+
+Measured outcomes are used only to calculate residuals
+after predictions have been generated.
+
+### APACHE-18: Unusual Configuration Settings
+
+Configuration isolation score:
+
+    mean normalized Hamming distance to five nearest
+    historical configurations
+
+Training-calibrated isolation threshold: 0.1500.
+
+Flagged held-out records: 1 of 38.
+
+Five highest isolation scores:
+
+| CSV row | Isolation score | Nearest distance | Flagged |
+|---:|---:|---:|---|
+| 9 | 0.1750 | 0.1250 | Yes |
+| 23 | 0.1500 | 0.1250 | No |
+| 174 | 0.1500 | 0.1250 | No |
+| 2 | 0.1250 | 0.1250 | No |
+| 7 | 0.1250 | 0.1250 | No |
+
+The configuration anomaly detector uses only adjustable
+settings and never uses the measured performance outcome.
+
+### Detector Comparison
+
+| Metric | Count |
+|---|---:|
+| Outcome anomalies | 9 |
+| Configuration anomalies | 1 |
+| Flagged by both detectors | 0 |
+
+The two methods detect different forms of unusual behavior.
+
+### Verification
+
+- Complete Apache test suite: 98/98 tests passed.
+- Outcome residual calculations verified.
+- Configuration-distance calculations verified.
+- Evaluated records excluded from their own neighbor sets.
+- Thresholds computed exclusively from training records.
+- Changing test performance values did not affect
+  configuration anomaly scores or threshold calibration.
+- Synthetic examples verified that unexpected performance
+  and unusual settings can be detected independently.
+
+### Limitations
+
+- Thresholds are exploratory 90th-percentile screening rules.
+- A training-based 90th-percentile threshold does not
+  guarantee a 10% anomaly rate on held-out configurations.
+- Binary settings produce discrete isolation scores and ties.
+- Anomaly flags do not establish a server fault.
+- No repeated measurements of identical configurations
+  are available to directly estimate benchmark noise.
