@@ -254,3 +254,63 @@ Final top-five configurations:
 - The simulated arrival order is not chronological.
 - An alert indicates unusual performance relative to
   previous observations, not a confirmed server defect.
+
+## Step 5: Blame
+
+Requirements: APACHE-09 and APACHE-10.
+
+### Method
+
+- Poor performers: highest 25% of recorded Performance-
+  values, including ties at the cutoff.
+- Poor-performance cutoff: 1890.
+- Poor-performing configurations: 49.
+- Remaining configurations: 143.
+- Individual binary settings and two-setting combinations
+  compared using between-group prevalence differences.
+- Pair patterns require at least five poor-group records.
+- The constant `base` is excluded.
+
+### APACHE-09: Individual Settings
+
+| Setting/value | Poor group | Others | Difference |
+|---|---:|---:|---:|
+| keepAlive=1 | 100.0% | 32.9% | +67.1 pp |
+| handle=0 | 100.0% | 55.2% | +44.8 pp |
+| inMemory=1 | 59.2% | 24.5% | +34.7 pp |
+| accessLog=0 | 63.3% | 45.5% | +17.8 pp |
+| extendedStatus=0 | 57.1% | 47.6% | +9.6 pp |
+| enableSendfile=1 | 55.1% | 48.3% | +6.9 pp |
+| hostnameLookups=0 | 55.1% | 48.3% | +6.9 pp |
+| followSymLinks=1 | 53.1% | 49.0% | +4.1 pp |
+
+All 49 poor-performing configurations have keepAlive=1
+and handle=0.
+
+### APACHE-10: Setting Combinations
+
+| Combination | Poor group | Others | Difference | Poor count |
+|---|---:|---:|---:|---:|
+| keepAlive=1, handle=0 | 100.0% | 10.5% | +89.5 pp | 49 |
+| keepAlive=1, inMemory=1 | 59.2% | 2.1% | +57.1 pp | 29 |
+| keepAlive=1, accessLog=0 | 63.3% | 11.9% | +51.4 pp | 31 |
+| keepAlive=1, extendedStatus=0 | 57.1% | 14.0% | +43.2 pp | 28 |
+| hostnameLookups=0, keepAlive=1 | 55.1% | 14.7% | +40.4 pp | 27 |
+
+The comparisons use group-normalized frequencies, not
+absolute counts alone.
+
+### Verification
+
+- Complete Apache suite: 50/50 tests passed.
+- Group selection, prevalence, pair enumeration,
+  minimum support, and real-data invariants tested.
+- Step 5 demonstration executed successfully.
+
+### Limitations
+
+- These are observational associations, not causal effects.
+- Correlated settings can produce overlapping patterns.
+- Pairwise patterns are descriptive and were not subjected
+  to formal significance or multiplicity corrections.
+- The highest-quarter threshold is an operational choice.
