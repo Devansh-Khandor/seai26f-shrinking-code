@@ -1,6 +1,6 @@
 # NASA batch b transfer LOC
 
-Baseline: `fd68b8986204150dc7d86bb0a6167653e2e24d7b`. Target: **WORKTREE (provisional)**.
+Baseline: `fd68b8986204150dc7d86bb0a6167653e2e24d7b`. Target: **41e9c47a3919984d5cb0715729054e00752d66ad**.
 
 | File | Category | Added | Removed | Total |
 |---|---|---:|---:|---:|

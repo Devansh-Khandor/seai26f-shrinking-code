@@ -1,6 +1,6 @@
 # APACHE batch b transfer LOC
 
-Baseline: `05b6e99399e1de10f128a770d547cf3997cd52d4`. Target: **WORKTREE (provisional)**.
+Baseline: `05b6e99399e1de10f128a770d547cf3997cd52d4`. Target: **ab8b791f1d9126265b28accff878ad9fc6c1a62e**.
 
 | File | Category | Added | Removed | Total |
 |---|---|---:|---:|---:|

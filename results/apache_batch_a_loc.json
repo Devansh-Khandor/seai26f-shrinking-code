@@ -1,7 +1,15 @@
 {
   "baseline": "41e9c47a3919984d5cb0715729054e00752d66ad",
-  "target": "WORKTREE (provisional)",
+  "target": "05b6e99399e1de10f128a770d547cf3997cd52d4",
   "files": [
+    {
+      "path": "shrinking_code/alternatives.py",
+      "category": "shared_additions",
+      "added": 0,
+      "removed": 0,
+      "total": 106,
+      "sha256": "f3f8a15ffa08fe0e447d6aa6cef078852a0d362c7f6e2baf7cd9471bb0da531e"
+    },
     {
       "path": "shrinking_code/diagnosis.py",
       "category": "shared_additions",
