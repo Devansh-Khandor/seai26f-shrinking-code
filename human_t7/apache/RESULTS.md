@@ -314,3 +314,94 @@ absolute counts alone.
 - Pairwise patterns are descriptive and were not subjected
   to formal significance or multiplicity corrections.
 - The highest-quarter threshold is an operational choice.
+
+## Step 6: Justify
+
+Requirements: APACHE-11 and APACHE-12.
+
+### Method
+
+- Reused the deterministic 154/38 train/test split from Guess.
+- Used five-nearest-neighbor regression over eight adjustable settings.
+- Selected the held-out candidate with the lowest predicted performance.
+- Explained predictions using recorded outcomes and setting differences
+  from the five nearest training configurations.
+- Revealed held-out measured values only after making predictions
+  and selecting the recommended configuration.
+- Explanations describe model evidence, not causal effects.
+
+### APACHE-11: Recommended Configuration
+
+Recommended CSV row: 71.
+
+| Metric | Value |
+|---|---:|
+| Predicted performance | 948 |
+| Measured performance | 960 |
+| Prediction error (predicted - measured) | -12 |
+| Absolute prediction error | 12 |
+| Historical neighbor SD | 62.21 |
+| Historical neighbor range | 870 to 1020 |
+
+Recommended configuration settings:
+
+| Setting | Value |
+|---|---:|
+| hostnameLookups | 1 |
+| keepAlive | 0 |
+| enableSendfile | 0 |
+| followSymLinks | 0 |
+| accessLog | 0 |
+| extendedStatus | 1 |
+| inMemory | 0 |
+| handle | 1 |
+
+Supporting historical configurations:
+
+| CSV row | Performance | Hamming distance | Differing setting |
+|---|---:|---:|---|
+| 70 | 990 | 0.125 | extendedStatus |
+| 73 | 870 | 0.125 | accessLog |
+| 76 | 960 | 0.125 | followSymLinks |
+| 80 | 1020 | 0.125 | keepAlive |
+| 122 | 900 | 0.125 | handle |
+
+All five neighbors differ in exactly one adjustable setting.
+Their mean recorded performance is 948.
+
+### APACHE-12: Configuration Comparison
+
+Configurations A and B are held-out historical records.
+
+| Metric | A | B |
+|---|---:|---:|
+| CSV row | 2 | 24 |
+| accessLog | 0 | 1 |
+| Predicted performance | 1794 | 1584 |
+| Historical neighbor SD | 494.04 | 399.91 |
+
+- Differing setting: accessLog (0 -> 1).
+- Predicted performance difference (B - A): -210.
+- Recorded performance difference (B - A): -270.
+- Difference between predicted and observed changes: 60.
+
+The two predicted values are supported by different sets
+of five historical nearest neighbors.
+
+### Verification
+
+- Complete Apache test suite: 62/62 tests passed.
+- Explanations were checked against historical evidence.
+- Candidate targets were excluded from recommendation decisions.
+- Changing held-out target values did not change the recommendation.
+- Fabricated historical evidence was rejected by semantic tests.
+
+### Limitations
+
+- Local explanations describe kNN behavior, not causal mechanisms.
+- Neighbor ranges and standard deviations are descriptive,
+  not calibrated confidence or prediction intervals.
+- Good prediction accuracy for one selected configuration
+  does not establish overall reliability.
+- Observed performance differences cannot be attributed
+  causally to individual settings.

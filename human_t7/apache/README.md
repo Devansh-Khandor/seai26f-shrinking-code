@@ -24,6 +24,7 @@ Frozen requirements: `docs/requirements_apache.md`
 | 3 | Certify | APACHE-05/06 | certify.py | Implemented |
 | 4 | Flow | APACHE-07/08 | flow.py | Implemented |
 | 5 | Blame | APACHE-09/10 | blame.py | Implemented |
+| 6 | Justify | APACHE-11/12 | justify.py | Implemented |
 
 Later skills will reuse earlier functionality.
 
