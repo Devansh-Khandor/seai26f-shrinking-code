@@ -25,6 +25,7 @@ Frozen requirements: `docs/requirements_apache.md`
 | 4 | Flow | APACHE-07/08 | flow.py | Implemented |
 | 5 | Blame | APACHE-09/10 | blame.py | Implemented |
 | 6 | Justify | APACHE-11/12 | justify.py | Implemented |
+| 7 | Choose | APACHE-13/14 | choose.py | Implemented |
 
 Later skills will reuse earlier functionality.
 

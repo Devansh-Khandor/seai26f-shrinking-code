@@ -405,3 +405,75 @@ of five historical nearest neighbors.
   does not establish overall reliability.
 - Observed performance differences cannot be attributed
   causally to individual settings.
+
+## Step 7: Choose
+
+Requirements: APACHE-13 and APACHE-14.
+
+### Method
+
+- Initial training history: 154 configurations.
+- Held-out candidate pool: 38 configurations.
+- Predictive model: five-nearest-neighbor regression.
+- Ranking: lowest predicted Performance- first.
+- Ranking uses only configuration settings and
+  historical training outcomes.
+- Candidate measured outcomes are revealed only after inspection.
+- Fixed inspection plan: no retraining after each benchmark.
+- All candidates are historically observed configurations.
+
+### APACHE-14: Recommended Benchmarking Order
+
+| Priority | CSV row | Predicted | Measured |
+|---:|---:|---:|---:|
+| 1 | 71 | 948 | 960 |
+| 2 | 152 | 972 | 900 |
+| 3 | 72 | 1008 | 930 |
+| 4 | 88 | 1026 | 960 |
+| 5 | 8 | 1062 | 1110 |
+| 6 | 151 | 1062 | 840 |
+| 7 | 87 | 1068 | 990 |
+| 8 | 40 | 1104 | 1200 |
+| 9 | 51 | 1128 | 1110 |
+| 10 | 115 | 1140 | 1080 |
+
+The measured values are shown retrospectively.
+They were not available to the ranking algorithm.
+
+### APACHE-13: Benchmark Budget Results
+
+| Budget | Best CSV row | Best measured performance |
+|---:|---:|---:|
+| 5 | 152 | 900 |
+| 10 | 151 | 840 |
+| 20 | 151 | 840 |
+
+The full held-out candidate pool contains a minimum
+measured performance of 840 at CSV row 151.
+
+This configuration was discovered at inspection 6,
+after examining 6 of the 38 candidate configurations
+(approximately 15.8% of the pool).
+
+### Verification
+
+- Complete Apache suite: 74/74 tests passed.
+- Predictions ranked candidates independently of
+  their measured outcomes.
+- Changing candidate targets did not affect rankings.
+- No overlap between training and candidate identifiers.
+- Inspections respected the specified evaluation budgets.
+- Best-so-far performance never increased with budget.
+- The full-pool optimum was used only for retrospective analysis.
+
+### Limitations
+
+- No random-selection baseline has yet been evaluated;
+  this is reserved for Step 10: Race.
+- The model uses a fixed prediction-based ranking and
+  does not update its plan after observing new benchmarks.
+- Results depend on the selected train/test split.
+- Finding the full-pool optimum early in one simulation
+  does not establish statistically reliable superiority.
+- The benchmark simulation reveals existing measurements;
+  no new Apache server benchmarks were executed.
