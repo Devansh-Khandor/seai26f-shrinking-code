@@ -181,3 +181,76 @@ permutation p-value is unadjusted for multiple comparisons.
 - Step 3 executed successfully.
 - Tests cover grouping, effect-size calculations,
   distribution comparisons, and deterministic permutation tests.
+
+## Step 4: Flow
+
+Requirements: APACHE-07 and APACHE-08.
+
+### Streaming Setup
+
+- Initial historical configurations: 154.
+- Incoming benchmark records: 38.
+- Final configurations: 192.
+- Split reused from Guess (seed 42).
+- Arrival order follows the held-out records.
+- Alert threshold: historical nearest-rank 90th percentile.
+- An alert is triggered when performance strictly exceeds
+  the threshold computed before the arrival.
+- Lower Performance- values are preferable.
+
+### APACHE-07: Streaming Alerts
+
+Eight incoming records triggered unusually poor performance alerts.
+
+| Arrival | CSV row | Performance | Prior P90 |
+|---:|---:|---:|---:|
+| 4 | 9 | 2160 | 2100 |
+| 5 | 23 | 2340 | 2130 |
+| 7 | 27 | 2190 | 2130 |
+| 23 | 109 | 2370 | 2130 |
+| 27 | 144 | 2220 | 2130 |
+| 33 | 167 | 2190 | 2130 |
+| 34 | 174 | 2280 | 2160 |
+| 36 | 180 | 2190 | 2160 |
+
+Each incoming record was assessed against earlier observations
+before being added to the historical inventory.
+
+### APACHE-08: Final Updated Summary
+
+| Metric | Result |
+|---|---:|
+| Final configurations | 192 |
+| Minimum performance | 840 |
+| Median performance | 1215 |
+| Mean performance | 1427.66 |
+| Maximum performance | 2640 |
+
+Final top-five configurations:
+
+| CSV row | Performance |
+|---:|---:|
+| 125 | 840 |
+| 151 | 840 |
+| 73 | 870 |
+| 91 | 870 |
+| 103 | 870 |
+
+### Verification
+
+- 40/40 total Apache tests passed through Step 4.
+- Streaming and full-data batch summaries agree.
+- Final top-five shortlist matches batch ranking.
+- No future records are used in arrival-time decisions.
+- Duplicate arrivals and nonfinite performance values
+  are rejected by the streaming monitor.
+- The stream represents simulated arrivals rather than
+  actual timestamped benchmark observations.
+
+### Limitations
+
+- The 90th-percentile alert threshold is a documented
+  implementation choice.
+- The simulated arrival order is not chronological.
+- An alert indicates unusual performance relative to
+  previous observations, not a confirmed server defect.

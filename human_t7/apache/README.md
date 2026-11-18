@@ -22,6 +22,7 @@ Frozen requirements: `docs/requirements_apache.md`
 | 1 | Remember | APACHE-01/02 | remember.py | Implemented |
 | 2 | Guess | APACHE-03/04 | guess.py | Implemented |
 | 3 | Certify | APACHE-05/06 | certify.py | Implemented |
+| 4 | Flow | APACHE-07/08 | flow.py | Implemented |
 
 Later skills will reuse earlier functionality.
 
