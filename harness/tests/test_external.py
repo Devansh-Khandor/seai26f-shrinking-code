@@ -465,7 +465,8 @@ class TestOutputs(unittest.TestCase):
                               "race_selection.csv", "race_prediction.csv", "race_summary.csv", "race_report.md",
                               "t7_prediction.csv", "t7_prediction_report.md",
                               "fix_quality.csv", "fix_summary.csv", "fix_report.md",
-                              "justify_quality.csv", "justify_summary.csv", "justify_report.md"})
+                              "justify_quality.csv", "justify_summary.csv", "justify_report.md",
+                              "remember_quality.csv", "remember_summary.csv", "remember_report.md"})
             self.assertEqual({p: sha(p) for p in before}, before)
             with open(out / "prediction_mae.csv", newline="") as f:
                 got = list(csv.DictReader(f))
@@ -1692,6 +1693,206 @@ class TestJustifyRealArchive(unittest.TestCase):
                 self.assertEqual(items["recommended row is good"], r["subject_good"])
             real = [ok for name, ok in items.items() if name.endswith("values are real")]
             self.assertEqual(all(real), r["fabricated_values"] == 0, r["request_id"])
+
+    def test_success_implies_valid(self):
+        for r in self.rows:
+            if r["success"]:
+                self.assertTrue(r["primary"] and r["integrity_valid"])
+
+    def test_reproducible_and_untouched(self):
+        self.assertEqual(self.rows, self.again)
+        self.assertEqual(sha(E.ARCHIVE), self.before)
+
+
+def _summary_answer(data, **over):
+    out = {}
+    for g, w in data.goals():
+        vs = data.values(g)
+        lo, hi = min(vs), max(vs)
+        out[g] = {"mean": O.mean(vs), "median": O.median(vs), "min": lo, "max": hi,
+                  "best": hi if w > 0 else lo, "worst": lo if w > 0 else hi}
+    out.update(over)
+    return out
+
+
+class TestRememberMetrics(unittest.TestCase):
+    def setUp(self):
+        self.cars = _data(CARS_FIX_CSV)       # 8 rows; goals Lbs- (min), Acc+ (max), Mpg+ (max)
+        self.ap = _data(APACHE_FIX_CSV)       # 8 rows; Performance- = 100, 200, ..., 800
+
+    def test_goal_directions(self):
+        self.assertEqual(self.cars.goals(), [("Lbs-", -1), ("Acc+", 1), ("Mpg+", 1)])
+        m, ok = E.remember_metrics(self.cars, "summary", _summary_answer(self.cars))
+        self.assertTrue(ok and m["summary_exact"])
+        wrong = _summary_answer(self.cars)
+        wrong["Lbs-"] = dict(wrong["Lbs-"], best=4100, worst=2000)       # best/worst flipped for a minimised goal
+        m, ok = E.remember_metrics(self.cars, "summary", wrong)
+        self.assertEqual((m["summary_correct"], m["summary_checks"], ok), (16, 18, False))
+        self.assertIn("not an external", m["metric_type"])
+
+    def test_pareto_front(self):
+        front = O.pareto(self.cars)
+        for r in range(1, 9):
+            dominated = any(O.dominates(self.cars, o, r) for o in range(1, 9) if o != r)
+            self.assertEqual(r in front, not dominated)
+        self.assertIn(7, front)                       # 2050 lbs, 17 s, 33 mpg is not beaten on every goal
+        self.assertNotIn(4, front)                    # 4100 lbs, 10 s, 11 mpg is dominated
+
+    def test_shortlist_precision_recall_and_duplicates(self):
+        truth = {1, 2, 3}
+        pct = {r: (r - 1) / 8 for r in range(1, 9)}
+        m = E.shortlist_scores([1, 2, 5, 6], truth, pct, 8)
+        self.assertEqual((m["k"], m["hits"], m["precision"], m["recall"]), (4, 2, 0.5, 2 / 3))
+        self.assertEqual((m["recall_attainable"], m["base_rate"], m["precision_at_10"]), (2 / 3, 3 / 8, ""))
+        self.assertAlmostEqual(m["mean_percentile"], O.mean([0, 1 / 8, 4 / 8, 5 / 8]))
+        d = E.shortlist_scores([1, 1, 1, 5], truth, pct, 8)
+        self.assertEqual((d["hits"], d["precision"]), (1, 0.25))           # a duplicate never counts twice
+        long = E.shortlist_scores(list(range(1, 9)) + [9, 10, 11], set(range(1, 12)), {r: 0 for r in range(1, 12)}, 11)
+        self.assertEqual(long["precision_at_10"], 1.0)
+        empty = E.shortlist_scores([], truth, pct, 8)
+        self.assertEqual((empty["precision"], empty["recall_attainable"]), ("", ""))
+
+    def test_top_needs_exactly_ten_rows(self):
+        # The frozen format asks for exactly 10 rows; shorter or duplicated lists are schema errors.
+        big = O.load(E.DATA_DIR / "auto93.csv")
+        for top in ([1, 2, 3], [1] * 10, list(range(1, 10)) + [400]):
+            items = A.check_request("CAR-02", big, {"top": top}).items
+            self.assertTrue(any(n.endswith("answer format") and not ok for n, ok, _ in items), top)
+
+    def test_top_metrics_and_single_goal(self):
+        big = O.load(E.DATA_DIR / "auto93.csv")
+        front = sorted(O.pareto(big))
+        m, ok = E.remember_metrics(big, "top", {"top": front[:10]})
+        self.assertEqual((m["k"], m["hits"], m["precision"], m["truth_size"]), (10, 10, 1.0, len(front)))
+        self.assertAlmostEqual(m["recall"], 10 / len(front))
+        self.assertEqual(m["recall_attainable"], 1.0)
+        by_mpg = sorted(range(1, big.n + 1), key=lambda r: -big.value(r, "Mpg+"))[:10]
+        m2, _ = E.remember_metrics(big, "top", {"top": by_mpg})
+        tied = sorted(big.values("Mpg+"), reverse=True)[9]
+        n_tied = sum(v >= tied for v in big.values("Mpg+"))
+        self.assertEqual(m2["single_goal_list"], n_tied <= 15)
+
+    def test_percentiles(self):
+        s = O.d2h(self.cars)
+        pct = {r: sum(v < s[r] for v in s.values()) / 8 for r in s}
+        order = sorted(s, key=s.get)
+        self.assertEqual(E.shortlist_scores(order[:1], {order[0]}, pct, 8)["mean_percentile"], 0)
+        worst = E.shortlist_scores(order[-2:], set(), pct, 8)
+        self.assertEqual((worst["mean_percentile"], worst["recall"]), ((6 / 8 + 7 / 8) / 2, ""))
+
+    def test_best_quartile_and_ties(self):
+        q = O.best_fraction({r: self.ap.value(r, "Performance-") for r in range(1, 9)}, 0.25)
+        self.assertEqual(q, {1, 2})                                        # 100 and 200 (lower is better)
+        tie = _data("base,a,Performance-\n1,0,100\n1,1,100\n1,0,100\n1,1,500\n1,0,600\n1,1,700\n1,0,800\n1,1,900\n")
+        self.assertEqual(O.best_fraction({r: tie.value(r, "Performance-") for r in range(1, 9)}, 0.25), {1, 2, 3})
+        same = O.best_fraction(O.d2h(self.ap), 0.25)
+        self.assertEqual(same, q)                                          # matches the frozen checker's d2h form
+
+    def test_apache_settings_accuracy(self):
+        top = [1, 2, 3, 4, 5]
+        rest = [6, 7, 8]
+        share = lambda c, rs: sum(self.ap.value(r, c) == 1.0 for r in rs) / len(rs)
+        good = {"top": top, "settings": [{"setting": c, "top_share": share(c, top), "rest_share": share(c, rest)}
+                                          for c in ("c", "a")]}
+        m, ok = E.remember_metrics(self.ap, "top_settings", good)
+        self.assertEqual((m["k"], m["hits"], m["truth_size"]), (5, 2, 2))
+        self.assertEqual((m["settings_correct"], m["settings_accuracy"]), (2, 1.0))
+        self.assertTrue(m["most_distinguishing_first"])                    # c: 1/5 vs 3/3 differs most
+        self.assertFalse(ok)                                               # only 2 of 5 rows in the best quartile
+        bad = dict(good, settings=[dict(good["settings"][0], top_share=0.9), good["settings"][1]])
+        self.assertEqual(E.remember_metrics(self.ap, "top_settings", bad)[0]["settings_correct"], 1)
+
+    def test_unknown_kind(self):
+        with self.assertRaises(ValueError):
+            E.remember_metrics(self.cars, "choose_best", {})
+
+
+class TestRememberExtract(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        tmp = Path(cls.tmp.name)
+        cars = O.load(E.DATA_DIR / "auto93.csv")
+        front = sorted(O.pareto(cars))[:10]
+        good = json.dumps({"top": front})
+        summ = json.dumps(_summary_answer(cars))
+        both = lambda a, b: check_txt(f"ANSWER CAR-01 {a}\nANSWER CAR-02 {b}")
+        scen = {("T1", 1): ("ok", both(summ, good)), ("T1", 2): ("ok", both(summ, good), ),
+                ("T1", 3): ("ok", check_txt(f"ANSWER CAR-02 {good}", runs=False)), ("T2", 1): ("parse_failed", None),
+                ("T2", 2): ("ok", both(summ, json.dumps({"top": front[:3]}))), ("T2", 3): ("ok", check_txt("x"))}
+        cls.archive, cls.runs, cls.reqs = tmp / "z.zip", tmp / "runs.csv", tmp / "req.csv"
+        sem = json.dumps({"status": "pass", "runs": {"base": "ran", "shuffled": "ran"},
+                          "requests": [{"request_id": r, "status": "pass", "failed": [], "notes": []}
+                                       for r in ("CAR-01", "CAR-02")]})
+        shuf = json.dumps({"status": "fail", "runs": {"base": "ran", "shuffled": "ran"},
+                           "requests": [{"request_id": r, "status": "fail", "failed": ["shuffled:x: y"], "notes": []}
+                                        for r in ("CAR-01", "CAR-02")]})
+        with zipfile.ZipFile(cls.archive, "w") as z:
+            for (t, k), (st, chk) in scen.items():
+                if chk:
+                    z.writestr(E.entry_name(ROOT, MODEL, "cars", t, k, 1, "check.txt"), chk)
+                    z.writestr(E.entry_name(ROOT, MODEL, "cars", t, k, 1, "semantic.json"),
+                               shuf if (t, k) == ("T1", 2) else sem)
+        cls.runs.write_text("model,domain,treatment,trial,skill_index,status,runs,semantic\n" + "".join(
+            f"{MODEL},cars,{t},{k},1,{st},True,pass\n" for (t, k), (st, _) in scen.items()))
+        cls.reqs.write_text("model,domain,treatment,trial,request_id,status\n" + "".join(
+            f"{MODEL},cars,{t},{k},{r},pass\n" for (t, k) in scen for r in ("CAR-01", "CAR-02")))
+        cls.before = sha(cls.archive)
+        cls.rows = E.extract_remember(cls.archive, cls.runs, cls.reqs, E.DATA_DIR, domains=("cars",))
+        cls.by = {(r["treatment"], r["trial"], r["request_id"]): r for r in cls.rows}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_outcomes_and_denominators(self):
+        self.assertEqual(len(self.rows), 36)
+        want = {("T1", 1): "", ("T1", 2): "", ("T1", 3): "execution_failure", ("T2", 1): "generation_failed",
+                ("T2", 2): "answer_schema_error", ("T2", 3): "answer_missing", ("T3", 1): "not_attempted"}
+        for (t, k), reason in want.items():
+            r = self.by[(t, k, "CAR-02")]
+            self.assertEqual(r["exclusion_reason"], reason, (t, k))
+            if reason:
+                self.assertFalse(r["success"] or r["primary"])
+        r = self.by[("T1", 2, "CAR-02")]
+        self.assertEqual((r["shuffled_gate"], r["primary"]), ("fail", True))   # recorded, not gating
+        self.assertTrue(self.by[("T1", 1, "CAR-01")]["summary_exact"])
+        s = {(x["scope"], x["treatment"], x["request_id"]): x for x in E.summarize_remember(self.rows)}
+        t1 = s[("domain_treatment", "T1", "CAR-02")]
+        self.assertEqual((t1["attempted"], t1["executable"], t1["schema_valid"], t1["integrity_valid"]), (3, 2, 2, 2))
+        self.assertEqual(t1["shuffled_failed_among_valid"], 1)
+        t2 = s[("domain_treatment", "T2", "CAR-02")]
+        self.assertEqual((t2["integrity_valid"], t2["successful"], t2["delivery_rate"], t2["conditional_success_rate"]),
+                         (0, 0, 0.0, ""))
+
+    def test_archive_untouched(self):
+        self.assertEqual(sha(self.archive), self.before)
+
+
+class TestRememberRealArchive(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.before = sha(E.ARCHIVE)
+        cls.rows = E.extract_remember()
+        cls.again = E.extract_remember()
+
+    def test_all_attempts(self):
+        self.assertEqual(len(self.rows), 108)
+        self.assertEqual(len({(r["domain"], r["treatment"], r["trial"], r["request_id"]) for r in self.rows}), 108)
+
+    def test_agrees_with_frozen_checker(self):
+        z = zipfile.ZipFile(E.ARCHIVE)
+        for r in self.rows:
+            if not r["primary"]:
+                continue
+            data = O.load(E.DATA_DIR / E.DATASETS[r["domain"]])
+            ans = A.parse_answers(E.split_check(z.read(r["check_entry"]).decode())[1])[r["request_id"]]
+            items = A.check_request(r["request_id"], data, ans).items
+            base_ok = all(ok for _, ok, _ in items)
+            if r["kind"] in ("summary", "top", "top_settings"):
+                self.assertEqual(base_ok, bool(r["success"]), (r["request_id"], r["treatment"], r["trial"]))
+            if r["kind"] == "top":
+                self.assertEqual(r["k"], 10)
 
     def test_success_implies_valid(self):
         for r in self.rows:

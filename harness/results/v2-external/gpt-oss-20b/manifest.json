@@ -1,7 +1,7 @@
 {
-  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; phase 3: Race (guided vs random selection, model vs historical-mean prediction); phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters; phase 4C: Cars T7 prediction adapters; phase 5C: Fix observed alternatives (Cars, Apache); phase 5D: Justify truthfulness",
+  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; phase 3: Race (guided vs random selection, model vs historical-mean prediction); phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters; phase 4C: Cars T7 prediction adapters; phase 5C: Fix observed alternatives (Cars, Apache); phase 5D: Justify truthfulness; phase 5E: Remember shortlist quality",
   "status": "post-observation (added after the Task Talk; not pre-registered)",
-  "generated_utc": "2026-11-25T07:21:20+00:00",
+  "generated_utc": "2026-11-25T07:33:11+00:00",
   "command": "python -m harness.external",
   "model": "gpt-oss-20b",
   "protocol": {
@@ -235,6 +235,29 @@
       "justify_neighbors": "subject = recommended row; d2h percentile = share of rows with strictly lower d2h (0 = best); good = Pareto-optimal or best 25% by any aggregate (frozen rule); neighbour similarity = among the 25% most similar rows by harness.oracle.XSpace (frozen rule) and the mean share of rows strictly closer. success = subject good and every neighbour similar",
       "justify_estimate": "NASA-11: one held-out project; error |estimate - actual Effort-| and the training-mean error on that row. No mask rerun exists for this request, so leakage cannot be ruled out; the error is reported, not used for success. success = project held out, neighbours not held out and similar, estimate within [0.5 min, 2 max] of neighbour efforts (frozen rule)",
       "meaning": "these check that explanations are truthful about recorded rows; they are not human-rated usefulness and not evidence that any change would cause an improvement"
+    },
+    "remember": {
+      "status": "post-hoc (added after the Task Talk); success uses the frozen checker's own -02 rules",
+      "requests": {
+        "cars": [
+          "CAR-01",
+          "CAR-02"
+        ],
+        "nasa": [
+          "NASA-01",
+          "NASA-02"
+        ],
+        "apache": [
+          "APACHE-01",
+          "APACHE-02"
+        ]
+      },
+      "integrity_valid": "ran and ANSWER accepted by harness.answers.check_request; the -02 answers cite only row numbers and computed shares, so there are no cited cell values to verify; shuffled rerun recorded, not gating",
+      "-01": "summary fidelity only (share of the per-goal mean/median/min/max/best/worst values that are correct, as the frozen checker computes them); it is a description of the data, not an external recommendation metric",
+      "CAR-02/NASA-02": "truth = Pareto front under the goal directions (harness.oracle.pareto). precision = hits/k, recall = hits/|front|, recall_attainable = hits/min(k, |front|), base_rate = |front|/n. percentile = share of rows with strictly lower d2h (0 = best). success (frozen rule) = at least 8 of 10 rows Pareto-optimal or in the best 25% by any aggregate, and the list is not just the top rows of one goal",
+      "APACHE-02": "truth = best quartile of observed Performance- (harness.oracle.best_fraction, ties included; the 25% cut is the frozen checker's). precision = hits/k, recall = hits/|quartile|, percentile = share of rows with strictly lower Performance-. settings_accuracy = share of listed settings whose top_share and rest_share are within 0.011 of the truth (frozen tolerance). success (frozen rules) = at least 80% of the listed rows in the best quartile, every listed share correct, and the first setting among the two most distinguishing",
+      "top_10": "precision_at_10 uses the first 10 listed rows and is reported only when k >= 10",
+      "meaning": "Pareto non-domination and best-quartile performance follow from the declared goals and recorded values; they are not verified customer preferences, prices or satisfaction"
     }
   },
   "inputs": {
@@ -277,8 +300,8 @@
     "code": {
       "external": {
         "path": "harness/external.py",
-        "sha256": "c1e74e8b1057b99cff7e17fc6ce1f2c9abc2cec1f773269fa16c2458898d21f6",
-        "bytes": 151795
+        "sha256": "deed26f60efb8d2d97e3fd8e2bd519c9aac201e7f9858b980fff96958c84deeb",
+        "bytes": 173275
       },
       "answers": {
         "path": "harness/answers.py",
@@ -420,7 +443,7 @@
     }
   },
   "git": {
-    "commit": "aba105ce44276b283e6b88594db6c57bd907f3c0",
+    "commit": "884ae8ad6bbc7d33bcfc853d620b58e9b6f6ccdd",
     "branch": "analysis/external-metrics",
     "dirty": true
   },
@@ -437,7 +460,7 @@
       "sha256": "bfdf4537a3c13346996dbd2b9c6499ec6e5da58424e4827ca37ee7b8a7b222cd"
     },
     "prediction_report.md": {
-      "sha256": "dc9d8c9d3ff733388dc81cc4c09dfb72650f15d2ca996d19ae81e9a3adc28257"
+      "sha256": "f77cc37c04e42039cef51e5e6a849a0c6adbaef43ea284943aef8bbcfbe8fd92"
     },
     "selection_quality.csv": {
       "sha256": "35479bc46e332515390b91ffe682fe249924012c89835ab9633f249db6a65dda"
@@ -446,7 +469,7 @@
       "sha256": "3ecb40ca54175f50950b4ed8150d1ef79bf83a3eaded5591c8f59596f90fcfb0"
     },
     "selection_report.md": {
-      "sha256": "41e7222470aedd7337d46fee03d19d8ed8152212e389914afde0b887333a5bc0"
+      "sha256": "2539f1b62af6aad8bc8f1b8b43cdd1b235e881b3995f36e02ade714ccb9d2d84"
     },
     "race_selection.csv": {
       "sha256": "48487d69d56add1df70a6fd99aba8f5b56da4d4a272d9824fd6227f8bf08ca31"
@@ -458,13 +481,13 @@
       "sha256": "97b8d2880665321a8aa278ebd11e4b12d2dc546e3291fd87a1bae7cc6d0cc9b9"
     },
     "race_report.md": {
-      "sha256": "ff6ace3582c372783792904e68af6373cdf9180b5d0d2e290e21b76466569f99"
+      "sha256": "b2e5fa61f4e17e5a8625540401fac20cc668ae5f44d4c5a96d37203d53313448"
     },
     "t7_prediction.csv": {
       "sha256": "5a571583769304a7996d28ab319cb9a4e5d45fafc1e3aaae328c324b9ef71034"
     },
     "t7_prediction_report.md": {
-      "sha256": "3b06ed39fedbe3ed28906f52752ad827caf424e4654be2eae9f19f5d82ba6d52"
+      "sha256": "e3ce3afc33ff38cdd280ca63500fe536b65a2ea85095cd72bfc901ad6162094a"
     },
     "fix_quality.csv": {
       "sha256": "1dcaee78d75cba27291c10c2d8b7f50383110671092d4c318fdb4c8f6acd90a1"
@@ -473,7 +496,7 @@
       "sha256": "9068946bc2a3c65d963cdff7b4d450ace7dfd2332bee6a30ba7234b54affce92"
     },
     "fix_report.md": {
-      "sha256": "1f74c9e7cf2fb48263b645445246ce5e80be598a1a96558ba26e75ff28ff1867"
+      "sha256": "32fcc0db629235e73a904e849c770220b0e70cdb42b5386a7b5d25ec775bbcd3"
     },
     "justify_quality.csv": {
       "sha256": "776656d556a3cda7cdbc059bcb7c8162db216f472150e232cac0c8be40a836fd"
@@ -482,7 +505,16 @@
       "sha256": "bdca193b453eef83d86ed325c9789a320536a63017d9b8bf50aea07714d7eaed"
     },
     "justify_report.md": {
-      "sha256": "21b81996c62eba713e902b8e292fd89b85fd602ffb0a7341d5f0571c85adf134"
+      "sha256": "99e9cd6dc648e96fe1c828fd55b09950b888f825319db95ccf0dedabbc9d1e71"
+    },
+    "remember_quality.csv": {
+      "sha256": "18284e1d182931af5a3806099cd74fa8d0ede9b2202505a3f638f72b03665b03"
+    },
+    "remember_summary.csv": {
+      "sha256": "7e6236aef249cb0e4bbaaa1daff39de850d956636caf0c361e4f743654b002ce"
+    },
+    "remember_report.md": {
+      "sha256": "ee0129812be16bff0b3e03f2f68cc2c6ec8297ce99dcee87830f499059c7e16c"
     }
   }
 }

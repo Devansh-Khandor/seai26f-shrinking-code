@@ -144,6 +144,6 @@ MAE ratios are unitless, so they can be listed together, but the three domains h
 ## Provenance
 
 - Archive: `harness/results/v2/gpt-oss-20b-3trials.zip` (sha256 `d1a51a3fa3711829ede726dd08e1f77da070fc3e3064fdcd1971d24974eb7683`)
-- Code commit: `aba105ce44276b283e6b88594db6c57bd907f3c0` on `analysis/external-metrics` (uncommitted changes present)
+- Code commit: `884ae8ad6bbc7d33bcfc853d620b58e9b6f6ccdd` on `analysis/external-metrics` (uncommitted changes present)
 - Command: `python -m harness.external`
 - Full input and output hashes: `manifest.json`.

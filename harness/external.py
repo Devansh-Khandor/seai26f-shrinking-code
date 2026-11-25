@@ -1573,6 +1573,340 @@ def justify_report(rows, summary, manifest):
     return "\n".join(lines)
 
 
+# ---- phase 5E: Remember (skill 1) ---------------------------------------------------
+
+REMEMBER_STEP = 1
+REMEMBER = {
+    "cars": ("CAR-01", "CAR-02"),
+    "nasa": ("NASA-01", "NASA-02"),
+    "apache": ("APACHE-01", "APACHE-02"),
+}
+SHARE_TOL = 0.011          # the frozen checker's tolerance for top_share / rest_share
+
+REMEMBER_FIELDS = [
+    "model", "domain", "treatment", "trial", "skill_index", "request_id", "kind", "metric_type",
+    "step_status", "step_runs", "step_semantic", "request_status",
+    "check_runs", "check_timed_out", "answer_state", "answer_detail", "shuffled_gate", "integrity_valid",
+    # summary (-01): fidelity, not an external metric
+    "summary_checks", "summary_correct", "summary_fidelity", "summary_exact",
+    # shortlist (-02)
+    "k", "n_rows", "truth_set", "truth_size", "base_rate", "hits", "precision", "recall", "recall_attainable",
+    "precision_at_10", "mean_percentile", "median_percentile", "frozen_good_hits", "single_goal_list",
+    "n_settings", "settings_correct", "settings_accuracy", "most_distinguishing_first",
+    "success", "primary", "exclusion_reason", "notes",
+    "check_entry", "check_crc32", "check_sha256", "semantic_entry", "semantic_sha256",
+]
+
+REMEMBER_PROTOCOL = {
+    "status": "post-hoc (added after the Task Talk); success uses the frozen checker's own -02 rules",
+    "requests": {d: list(v) for d, v in REMEMBER.items()},
+    "integrity_valid": "ran and ANSWER accepted by harness.answers.check_request; the -02 answers cite only row "
+                       "numbers and computed shares, so there are no cited cell values to verify; shuffled rerun "
+                       "recorded, not gating",
+    "-01": "summary fidelity only (share of the per-goal mean/median/min/max/best/worst values that are correct, as the "
+           "frozen checker computes them); it is a description of the data, not an external recommendation metric",
+    "CAR-02/NASA-02": "truth = Pareto front under the goal directions (harness.oracle.pareto). precision = hits/k, "
+                      "recall = hits/|front|, recall_attainable = hits/min(k, |front|), base_rate = |front|/n. "
+                      "percentile = share of rows with strictly lower d2h (0 = best). success (frozen rule) = at least "
+                      "8 of 10 rows Pareto-optimal or in the best 25% by any aggregate, and the list is not just the top "
+                      "rows of one goal",
+    "APACHE-02": "truth = best quartile of observed Performance- (harness.oracle.best_fraction, ties included; the 25% "
+                 "cut is the frozen checker's). precision = hits/k, recall = hits/|quartile|, percentile = share of "
+                 "rows with strictly lower Performance-. settings_accuracy = share of listed settings whose top_share "
+                 "and rest_share are within 0.011 of the truth (frozen tolerance). success (frozen rules) = at least "
+                 "80% of the listed rows in the best quartile, every listed share correct, and the first setting "
+                 "among the two most distinguishing",
+    "top_10": "precision_at_10 uses the first 10 listed rows and is reported only when k >= 10",
+    "meaning": "Pareto non-domination and best-quartile performance follow from the declared goals and recorded "
+               "values; they are not verified customer preferences, prices or satisfaction",
+}
+
+
+def _summary_fidelity(data, ans):
+    ok = 0
+    total = 0
+    for g, w in data.goals():
+        e = ans[g]
+        vs = data.values(g)
+        lo, hi = min(vs), max(vs)
+        best, worst = (hi, lo) if w > 0 else (lo, hi)
+        med = A.num(e["median"])
+        checks = [O.close(A.num(e["mean"]), O.mean(vs)), any(O.close(med, m) for m in O.medians(vs)),
+                  O.close(A.num(e["min"]), lo), O.close(A.num(e["max"]), hi),
+                  O.close(A.num(e["best"]), best), O.close(A.num(e["worst"]), worst)]
+        ok += sum(checks)
+        total += len(checks)
+    return {"summary_checks": total, "summary_correct": ok, "summary_fidelity": ok / total, "summary_exact": ok == total}
+
+
+def _single_goal_list(data, top):
+    """The frozen check: is the list just the top rows by one goal (when that top is not hugely tied)?"""
+    for g, w in data.goals():
+        vs = sorted((w * data.value(r, g) for r in range(1, data.n + 1)), reverse=True)
+        tied = [r for r in range(1, data.n + 1) if w * data.value(r, g) >= vs[9]]
+        if len(tied) <= 15 and set(top) <= set(tied):
+            return True
+    return False
+
+
+def shortlist_scores(top, truth, percentile, n):
+    """Precision/recall of a shortlist against a truth set; duplicates are never counted twice."""
+    uniq = list(dict.fromkeys(top))
+    hits = sum(r in truth for r in uniq)
+    k = len(top)
+    pct = [percentile[r] for r in uniq]
+    return {
+        "k": k, "n_rows": n, "truth_size": len(truth), "base_rate": len(truth) / n, "hits": hits,
+        "precision": hits / k if k else "", "recall": hits / len(truth) if truth else "",
+        "recall_attainable": hits / min(k, len(truth)) if k and truth else "",
+        "precision_at_10": sum(r in truth for r in uniq[:10]) / 10 if k >= 10 and len(uniq) >= 10 else "",
+        "mean_percentile": O.mean(pct) if pct else "", "median_percentile": O.median(pct) if pct else "",
+    }
+
+
+def remember_metrics(data, kind, ans):
+    """Independent metrics for one schema-valid Remember answer. Returns (metrics, success)."""
+    if kind == "summary":
+        m = _summary_fidelity(data, ans)
+        m["metric_type"] = "summary fidelity (not an external recommendation metric)"
+        return m, m["summary_exact"]
+    if kind == "top":
+        top = A.rows(data, ans["top"], "top")
+        s = O.d2h(data)
+        vals = list(s.values())
+        pct = {r: sum(v < s[r] for v in vals) / len(vals) for r in s}
+        front = O.pareto(data)
+        m = shortlist_scores(top, front, pct, data.n)
+        good = O.good_rows(data, 0.25)
+        m.update(metric_type="shortlist quality vs the Pareto front", truth_set="Pareto front",
+                 frozen_good_hits=sum(r in good for r in top), single_goal_list=_single_goal_list(data, top))
+        return m, m["frozen_good_hits"] >= 8 and not m["single_goal_list"]
+    if kind == "top_settings":
+        top = A.rows(data, ans["top"], "top")
+        t = next(g for g, _ in data.goals())
+        perf = {r: data.value(r, t) for r in range(1, data.n + 1)}
+        q = O.best_fraction(perf, 0.25)
+        vals = list(perf.values())
+        pct = {r: sum(v < perf[r] for v in vals) / len(vals) for r in perf}
+        m = shortlist_scores(top, q, pct, data.n)
+        rest = [r for r in range(1, data.n + 1) if r not in set(top)]
+        share = lambda col, rs: sum(data.value(r, col) == 1.0 for r in rs) / len(rs)
+        inputs = data.inputs()
+        diffs = {col: abs(share(col, top) - share(col, rest)) for col in inputs}
+        items = ans["settings"]
+        correct = 0
+        for it in items:
+            col = it["setting"].strip()
+            correct += (O.close(A.num(it["top_share"]), share(col, top), abs_=SHARE_TOL)
+                        and O.close(A.num(it["rest_share"]), share(col, rest), abs_=SHARE_TOL))
+        first = items[0]["setting"].strip()
+        first_ok = diffs[first] >= sorted(diffs.values(), reverse=True)[1] - 1e-9
+        m.update(metric_type="shortlist quality vs the best Performance- quartile",
+                 truth_set="best quartile of Performance-", n_settings=len(items), settings_correct=correct,
+                 settings_accuracy=correct / len(items), most_distinguishing_first=first_ok)
+        return m, m["hits"] >= 0.8 * m["k"] and correct == len(items) and first_ok
+    raise ValueError(f"not a Remember kind: {kind}")
+
+
+def _remember_row(z, names, root, model, domain, t, k, rid, data, runs, reqs):
+    kind = A.REQUESTS[rid][0]
+    mtype = ("summary fidelity (not an external recommendation metric)" if kind == "summary"
+             else "shortlist quality")
+    row, ctx, ans, sem = _attempt(z, names, root, model, domain, t, k, REMEMBER_STEP, rid, data, runs, reqs,
+                                  REMEMBER_FIELDS, dict(kind=kind, metric_type=mtype, shuffled_gate="not_run",
+                                                        integrity_valid=False, success=False))
+    if ctx is None:
+        return row
+    row["shuffled_gate"] = shuffled_gate(sem, rid)
+    m, ok = remember_metrics(data, kind, ans)
+    row.update(m)
+    row.update(integrity_valid=True, primary=True, success=ok)
+    return row
+
+
+def extract_remember(archive=ARCHIVE, runs_csv=RUNS_CSV, requirements_csv=REQUIREMENTS_CSV, data_dir=DATA_DIR,
+                     model=MODEL, domains=DOMAINS):
+    runs = _index(runs_csv, ("model", "domain", "treatment", "trial", "skill_index"))
+    reqs = _index(requirements_csv, ("model", "domain", "treatment", "trial", "request_id"))
+    rows = []
+    with zipfile.ZipFile(archive) as z:
+        names = set(z.namelist())
+        root = archive_root(names, model)
+        for domain in domains:
+            if set(REMEMBER[domain]) != set(request_ids(domain, REMEMBER_STEP)):
+                raise ValueError(f"{REMEMBER[domain]} are not the frozen Remember requests of {domain}")
+            data = O.load(Path(data_dir) / DATASETS[domain])
+            for rid in REMEMBER[domain]:
+                for t in TREATMENTS:
+                    for k in TRIALS:
+                        rows.append(_remember_row(z, names, root, model, domain, t, k, rid, data, runs, reqs))
+    keys = [(r["domain"], r["treatment"], r["trial"], r["request_id"]) for r in rows]
+    if len(keys) != len(set(keys)):
+        raise ValueError("duplicate trial records")
+    return rows
+
+
+REMEMBER_SUMMARY_FIELDS = [
+    "scope", "domain", "treatment", "request_id", "kind",
+    "attempted", "executable", "schema_valid", "integrity_valid", "successful",
+    "generation_failed", "execution_failed", "answer_missing", "answer_invalid_json", "answer_schema_error",
+    "shuffled_failed_among_valid", "delivery_rate", "conditional_success_rate",
+    "n_rows", "truth_size", "base_rate", "median_k", "median_precision", "median_recall", "median_recall_attainable",
+    "median_precision_at_10", "median_percentile", "single_goal_lists", "median_settings_accuracy",
+    "median_summary_fidelity",
+]
+
+
+def _remember_cell(scope, domain, treatment, rid, sel):
+    prim = [r for r in sel if r["primary"]]
+    succ = sum(bool(r["success"]) for r in prim)
+    reasons = [r["exclusion_reason"] for r in sel]
+    return {
+        "scope": scope, "domain": domain, "treatment": treatment, "request_id": rid,
+        "kind": A.REQUESTS[rid][0],
+        "attempted": len(sel), "executable": sum(r["check_runs"] is True for r in sel),
+        "schema_valid": sum(r["answer_state"] == "valid" for r in sel), "integrity_valid": len(prim), "successful": succ,
+        "generation_failed": reasons.count("generation_failed") + reasons.count("not_attempted"),
+        "execution_failed": reasons.count("execution_failure") + reasons.count("execution_timeout"),
+        "answer_missing": reasons.count("answer_missing"), "answer_invalid_json": reasons.count("answer_invalid_json"),
+        "answer_schema_error": reasons.count("answer_schema_error"),
+        "shuffled_failed_among_valid": sum(r["shuffled_gate"] == "fail" for r in sel if r["answer_state"] == "valid"),
+        "delivery_rate": _rate(succ, len(sel)), "conditional_success_rate": _rate(succ, len(prim)),
+        "n_rows": _one(r["n_rows"] for r in prim) if prim else "",
+        "truth_size": _one(r["truth_size"] for r in prim) if prim else "",
+        "base_rate": _one(r["base_rate"] for r in prim) if prim else "",
+        "median_k": _med([r["k"] for r in prim]),
+        "median_precision": _med([r["precision"] for r in prim]),
+        "median_recall": _med([r["recall"] for r in prim]),
+        "median_recall_attainable": _med([r["recall_attainable"] for r in prim]),
+        "median_precision_at_10": _med([r["precision_at_10"] for r in prim]),
+        "median_percentile": _med([r["median_percentile"] for r in prim]),
+        "single_goal_lists": sum(r["single_goal_list"] is True for r in prim),
+        "median_settings_accuracy": _med([r["settings_accuracy"] for r in prim]),
+        "median_summary_fidelity": _med([r["summary_fidelity"] for r in prim]),
+    }
+
+
+def summarize_remember(rows):
+    out = []
+    for d in DOMAINS:
+        for rid in REMEMBER[d]:
+            for t in TREATMENTS:
+                sel = [r for r in rows if r["domain"] == d and r["treatment"] == t and r["request_id"] == rid]
+                if sel:
+                    out.append(_remember_cell("domain_treatment", d, t, rid, sel))
+            sel = [r for r in rows if r["domain"] == d and r["request_id"] == rid]
+            if sel:
+                out.append(_remember_cell("domain", d, "all", rid, sel))
+    return out
+
+
+def remember_report(rows, summary, manifest):
+    cells = [s for s in summary if s["scope"] == "domain_treatment"]
+    base = [s for s in summary if s["scope"] == "domain" and s["kind"] != "summary"]
+    lines = [
+        "# External metric, phase 5E: Remember — are the recommended records really the desirable ones?",
+        "",
+        "**Status: post-observation analysis.** Added after the Task Talk; not part of the pre-registered plan in "
+        "`docs/hypotheses.md`.",
+        "",
+        "**Ground truth.** For Cars and NASA, a row is desirable when it is on the Pareto front: no other recorded row "
+        "is at least as good on every goal and better on one, using the declared goal directions. For Apache, a "
+        "configuration is desirable when its recorded `Performance-` is in the best quartile (the frozen checker's 25% "
+        "cut, ties included). These follow from the declared goals and recorded values only. They are **not** verified "
+        "customer preferences, prices or satisfaction.",
+        "",
+        "**-01 is not an external metric.** CAR-01, NASA-01 and APACHE-01 ask for a summary of the data. Their score "
+        "here is *summary fidelity*: the share of per-goal mean, median, min, max, best and worst values that are "
+        "correct. It says whether the description is right, not whether a recommendation is useful.",
+        "",
+        "**Integrity-valid** = ran and passed the frozen format check (which already rejects duplicate and "
+        "out-of-range rows). The -02 answers cite only row numbers and computed shares, so there are no cited cell "
+        "values to verify. The shuffled rerun is recorded but does not gate.",
+        "",
+        "**Success** uses the frozen checker's own -02 rules: Cars/NASA, at least 8 of the 10 rows Pareto-optimal or in "
+        "the best 25% by any overall score, and the list is not just the top rows of one goal; Apache, at least 80% of "
+        "the listed rows in the best quartile, every listed setting share correct (±0.011), and the first setting "
+        "among the two most distinguishing.",
+        "",
+        "## Base rates",
+        "",
+        "| domain | request | truth set | size | rows | base rate | best possible recall with k = 10 |",
+        "|---|---|---|---:|---:|---:|---:|",
+    ]
+    for s in base:
+        tsz = s["truth_size"]
+        lines.append(f"| {s['domain']} | {s['request_id']} | "
+                     f"{'Pareto front' if s['kind'] == 'top' else 'best Performance- quartile'} | {tsz} | "
+                     f"{s['n_rows']} | {_pct(s['base_rate'])} | "
+                     f"{_num(min(10, tsz) / tsz if tsz else '', '.2f')} |")
+    lines += ["", "A random 10-row list would score the base rate in precision on average. NASA's front holds about half "
+              "of all projects, so NASA precision says little; read it with the single-goal column.", ""]
+    for d in DOMAINS:
+        for rid in REMEMBER[d]:
+            kind = A.REQUESTS[rid][0]
+            lines += [f"## {rid} (`{kind}`)", ""]
+            sel = [x for x in cells if x["request_id"] == rid]
+            if kind == "summary":
+                lines += ["| T | attempted | executable | schema valid | fully correct summaries | median fidelity |",
+                          "|---|---:|---:|---:|---:|---:|"]
+                for s in sel:
+                    lines.append(f"| {s['treatment']} | {s['attempted']} | {s['executable']} | {s['schema_valid']} | "
+                                 f"{s['successful']} | {_num(s['median_summary_fidelity'], '.3f')} |")
+            elif kind == "top":
+                lines += ["| T | attempted | executable | usable | k | median precision | median recall | median "
+                          "recall (attainable) | median d2h percentile | single-goal lists | successful | delivery |",
+                          "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+                for s in sel:
+                    lines.append(f"| {s['treatment']} | {s['attempted']} | {s['executable']} | {s['integrity_valid']} | "
+                                 f"{_num(s['median_k'], '.0f')} | {_num(s['median_precision'], '.2f')} | "
+                                 f"{_num(s['median_recall'], '.2f')} | {_num(s['median_recall_attainable'], '.2f')} | "
+                                 f"{_num(s['median_percentile'], '.3f')} | {s['single_goal_lists']} | "
+                                 f"{s['successful']} | {_pct(s['delivery_rate'])} |")
+            else:
+                lines += ["| T | attempted | executable | usable | median k | median precision | median recall | "
+                          "median precision@10 | median performance percentile | median settings accuracy | "
+                          "successful | delivery |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+                for s in sel:
+                    lines.append(f"| {s['treatment']} | {s['attempted']} | {s['executable']} | {s['integrity_valid']} | "
+                                 f"{_num(s['median_k'], '.0f')} | {_num(s['median_precision'], '.2f')} | "
+                                 f"{_num(s['median_recall'], '.2f')} | {_num(s['median_precision_at_10'], '.2f')} | "
+                                 f"{_num(s['median_percentile'], '.3f')} | {_num(s['median_settings_accuracy'], '.2f')} "
+                                 f"| {s['successful']} | {_pct(s['delivery_rate'])} |")
+            lines.append("")
+    lines += ["## By domain and request", "",
+              "| domain | request | attempted | executable | schema valid | integrity valid | successful | delivery rate | "
+              "conditional success | shuffled failures (valid) |", "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    for s in [s for s in summary if s["scope"] == "domain"]:
+        lines.append(f"| {s['domain']} | {s['request_id']} | {s['attempted']} | {s['executable']} | {s['schema_valid']} | "
+                     f"{s['integrity_valid']} | {s['successful']} | {_pct(s['delivery_rate'])} | "
+                     f"{_pct(s['conditional_success_rate'])} | {s['shuffled_failed_among_valid']} |")
+    lines += [
+        "", "## Limitations", "",
+        "- **Pareto is not desirability.** Non-domination ignores price, condition, reliability and customer taste, "
+        "none of which are in the data. A row can be non-dominated only because it is extreme on one goal (for example "
+        "the largest NASA project), which is why the single-goal rule matters.",
+        "- **Base rates differ hugely** (Cars 13 of 398 rows on the front, NASA 47 of 93, Apache quartile 52 of 192), "
+        "so precision is not comparable across domains.",
+        "- **CAR-02 and NASA-02 ask for exactly 10 rows**, so k is fixed; recall is capped at k / front size when the "
+        "front is larger than 10.",
+        "- **The Apache quartile cut** is the frozen checker's 25%; it is an evaluation choice, not a customer target.",
+        "- **-01 measures fidelity**, not usefulness.",
+        "- **Three trials per cell, often fewer usable.** No statistical test is applied.",
+        "- **T7 is not included.** NASA and Apache Remember adapters exist (`t7_validation/adapters/{nasa,apache}/"
+        "remember.py`); the Apache adapter reports a ten-row shortlist of its 52-row favourable group "
+        "(`t7_validation/README.md`). Scoring them would need an approved adapter run. Cars T7 has no Remember adapter.",
+        "", "## Provenance", "",
+        f"- Archive: `{manifest['inputs']['archive']['path']}` (sha256 `{manifest['inputs']['archive']['sha256']}`)",
+        f"- Code commit: `{manifest['git']['commit']}` on `{manifest['git']['branch']}`"
+        f"{' (uncommitted changes present)' if manifest['git']['dirty'] else ''}",
+        f"- Command: `{manifest['command']}`",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+
 # ---- phase 4B: T7 prediction through the existing validation adapters ----------------
 
 T7_PROTOCOL = "v2-common: every-fifth-row hold-out, training-mean baseline (t7_validation adapter)"
@@ -2098,7 +2432,7 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
                     "phase 3: Race (guided vs random selection, model vs historical-mean prediction); "
                     "phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters; "
                     "phase 4C: Cars T7 prediction adapters; phase 5C: Fix observed alternatives (Cars, Apache); "
-                    "phase 5D: Justify truthfulness",
+                    "phase 5D: Justify truthfulness; phase 5E: Remember shortlist quality",
         "status": "post-observation (added after the Task Talk; not pre-registered)",
         "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "command": "python -m harness.external" + (" " + " ".join(argv) if argv else ""),
@@ -2120,6 +2454,7 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
             "t7_prediction": T7_PREDICTION_PROTOCOL,
             "fix": FIX_PROTOCOL,
             "justify": JUSTIFY_PROTOCOL,
+            "remember": REMEMBER_PROTOCOL,
         },
         "inputs": {
             "archive": _file_info(archive),
@@ -2451,7 +2786,7 @@ def race_report(sel_rows, pred_rows, summary, manifest):
 
 
 def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=None, race=None, t7=None, fix=None,
-                  justify=None):
+                  justify=None, remember=None):
     out = guard_out(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     files = {
@@ -2492,6 +2827,13 @@ def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=N
             "justify_summary.csv": to_csv(jsum, JUSTIFY_SUMMARY_FIELDS),
             "justify_report.md": justify_report(jrows, jsum, manifest),
         })
+    if remember is not None:
+        mrows, msum = remember
+        files.update({
+            "remember_quality.csv": to_csv(mrows, REMEMBER_FIELDS),
+            "remember_summary.csv": to_csv(msum, REMEMBER_SUMMARY_FIELDS),
+            "remember_report.md": remember_report(mrows, msum, manifest),
+        })
     for name, text in files.items():
         (out / name).write_text(text, encoding="utf-8")
     manifest = dict(manifest, outputs={n: {"sha256": _sha(t.encode("utf-8"))} for n, t in files.items()})
@@ -2525,8 +2867,10 @@ def main(argv=None):
         a.data_dir, specs=tuple(x for x in T7_PREDICTION if x[0] in domains))
     fix = extract_fix(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
     just = extract_justify(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
+    rem = extract_remember(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
     out = write_outputs(a.out, rows, summary, manifest, sel, sel_summary, (rsel, rpred, summarize_race(rsel, rpred)),
-                        t7, (fix, summarize_fix(fix)), (just, summarize_justify(just)))
+                        t7, (fix, summarize_fix(fix)), (just, summarize_justify(just)),
+                        (rem, summarize_remember(rem)))
     print(f"prediction: {len(rows)} attempts, {sum(r['primary'] for r in rows)} in the primary metric")
     print(f"selection:  {len(sel)} attempts, {sum(r['primary'] for r in sel)} in the primary metric")
     print(f"race selection:  {len(rsel)} attempts, {sum(r['primary'] for r in rsel)} in the primary metric")
@@ -2535,6 +2879,8 @@ def main(argv=None):
           f"{sum(bool(r['success']) for r in fix)} successful")
     print(f"justify:         {len(just)} attempts, {sum(r['primary'] for r in just)} integrity-valid, "
           f"{sum(bool(r['success']) for r in just)} successful")
+    print(f"remember:        {len(rem)} attempts, {sum(r['primary'] for r in rem)} integrity-valid, "
+          f"{sum(bool(r['success']) for r in rem)} successful")
     if t7 is not None:
         print(f"T7 prediction:   {len(t7)} requests, {sum(r['primary'] for r in t7)} in the primary metric")
     print(f"wrote {out}")
