@@ -2364,6 +2364,489 @@ def certify_report(rows, summary, manifest, refs):
     return "\n".join(lines)
 
 
+# ---- phase 5G: Flow (skill 4), streaming decisions, predictions and checkpoints ------
+
+FLOW_STEP = 4
+FLOW = {
+    "cars": ("CAR-07", "CAR-08"),
+    "nasa": ("NASA-07", "NASA-08"),
+    "apache": ("APACHE-07", "APACHE-08"),
+}
+FLOW_FUTURE_KINDS = {"stream_desirable", "stream_alert_pred", "stream_alert_poor"}   # kinds with the frozen future rerun
+
+FLOW_FIELDS = [
+    "model", "domain", "treatment", "trial", "skill_index", "request_id", "kind", "metric_type", "decision_basis",
+    "step_status", "step_runs", "step_semantic", "request_status",
+    "check_runs", "check_timed_out", "answer_state", "answer_detail", "future_gate", "future_detail",
+    "shuffled_gate", "integrity_valid", "n_history", "n_arrivals",
+    # per-arrival decisions (CAR-07, NASA-07 alerts, APACHE-07)
+    "decisions", "positives", "base_rate", "tp", "fp", "fn", "tn", "precision", "recall",
+    "strict_positives", "strict_tp", "strict_precision", "strict_recall",
+    "accepted_median_percentile", "rejected_median_percentile", "must_alert", "must_alert_hit",
+    # NASA-07 predictions
+    "predictions", "mae_model", "mae_baseline", "mae_ratio", "beats_baseline", "better_than_baseline_share",
+    "defects_mae_model", "defects_mae_baseline", "defects_mae_ratio", "spearman_effort", "self_match_share",
+    # checkpoints (-08)
+    "checkpoints", "summary_checks", "summary_correct", "summary_fidelity", "shortlist_rows", "future_rows_used",
+    "good_hits", "good_precision", "good_base_rate", "front_hits", "front_precision", "front_base_rate",
+    "median_percentile", "arrivals_shortlisted", "good_arrivals_available", "shortlist_changed", "checkpoint_detail",
+    "frozen_base_pass", "success", "primary", "exclusion_reason", "notes",
+    "check_entry", "check_crc32", "check_sha256", "semantic_entry", "semantic_sha256",
+]
+
+FLOW_PROTOCOL = {
+    "status": "post-hoc (added after the Task Talk); arrival order, checkpoints and thresholds are the frozen ones, "
+              "and every reference set is computed from rows that have already arrived",
+    "requests": {d: list(v) for d, v in FLOW.items()},
+    "request_mapping": "frozen kinds: CAR-07 stream_desirable; NASA-07 stream_alert_pred (per-arrival effort/defect "
+                       "predictions and alerts); APACHE-07 stream_alert_poor; CAR-08, NASA-08, APACHE-08 "
+                       "stream_summary (checkpoint summaries and a 5-row shortlist). NASA-08 has no alerts",
+    "arrivals": "harness.oracle.arrivals: the last round(0.2 n) rows in file order; the rows before are history. At "
+                "arrival r the visible rows are 1..r (r's own recorded columns are in the file the program reads)",
+    "CAR-07": "decision = desirable. Reference (post-hoc application of the oracle's own 'best seen' set, the one the "
+              "frozen stream_summary checker uses): r in harness.oracle.good_rows(data, 0.25, rows 1..r) — Pareto-optimal "
+              "or in the best 25% under any aggregate among rows seen so far. Strict reference: r on the Pareto front "
+              "of rows 1..r. Precision = tp/(tp+fp), recall = tp/(tp+fn); blank with no decisions/positives. Labels "
+              "a record whose goals are already observed: classification of observed records, not prediction",
+    "NASA-07 predictions": "MAE of predicted_effort against the recorded Effort-; baseline = mean Effort- of rows 1..r-1 "
+                           "(history plus earlier arrivals only); mae_ratio = model/baseline; better_than_baseline_share "
+                           "= arrivals with |pred - actual| < |baseline - actual|; the same for predicted_defects. "
+                           "Self-reported statistics are not used. self_match_share = predictions within O.close of the "
+                           "arrival's own recorded Effort- (a post-hoc indicator of self-leakage, which the frozen "
+                           "future rerun cannot detect because it changes only later arrivals)",
+    "NASA-07 alerts": "post-hoc application of the frozen alert-justification threshold to actual outcomes: an arrival "
+                      "is high when its recorded Effort- or Defects- exceeds the median of rows 1..r-1. Prospective: the "
+                      "alert is supposed to come from predictions made before the outcome is known",
+    "APACHE-07": "rule adherence, not prediction: the alert is raised after the arrival's Performance- is observed. "
+                 "Positive = worse than the median of rows 1..r-1 (the frozen justification threshold); must_alert = "
+                 "worse than every earlier row (the frozen required alert)",
+    "-08 checkpoints": "after m = 0, k//2, k arrivals, visible rows 1..history+m. summary fidelity = share of per-goal "
+                       "n/mean/min/max values correct; future_rows_used = shortlisted rows not yet arrived (leakage); "
+                       "good_precision = shortlisted rows in O.good_rows(data, 0.25, visible) / 5 (frozen pass needs "
+                       ">= 4/5); front_precision = rows on the Pareto front of visible rows / 5; percentile = share of "
+                       "visible rows with strictly lower d2h (bounds from visible rows); arrivals_shortlisted and "
+                       "good_arrivals_available show whether new arrivals were incorporated",
+    "integrity_valid": "ran, ANSWER accepted by the frozen format check, and for -07 the archived future rerun "
+                       "passed (fail = earlier decisions changed when only later arrivals changed; unverified = the "
+                       "rerun crashed, timed out or was not run, excluded); for -08 no shortlisted row from the future",
+    "success": "the frozen checker's own base checks all pass (recomputed); quality metrics are reported alongside",
+    "counting": "one attempt per trial; arrivals and checkpoints are not independent trials",
+}
+
+
+def future_gate(sem, rid):
+    """('pass' | 'fail' | 'unverified' | 'not_run', detail) from the archived future-arrivals rerun."""
+    req = next((r for r in sem.get("requests", []) if r.get("request_id") == rid), None)
+    if req is None:
+        return "not_run", "request missing from semantic evidence"
+    fut = [f for f in req.get("failed", []) if f.startswith("future:")]
+    leak = [f for f in fut if not (f.startswith("future:program runs") or f.startswith("future:answer present"))]
+    if leak:
+        return "fail", leak[0][:200]
+    outcome = sem.get("runs", {}).get("future")
+    if outcome is None:
+        return "not_run", "no future rerun recorded"
+    if outcome != "ran" or fut:
+        return "unverified", (fut[0][:200] if fut else f"future rerun {outcome}")
+    return "pass", ""
+
+
+def confusion(decided, truth, arrivals):
+    """tp/fp/fn/tn, precision and recall of a set of positive decisions against a truth set over ARRIVALS."""
+    d, t = set(decided), set(truth)
+    tp = len(d & t)
+    fp = len(d - t)
+    fn = len(t - d)
+    return {"decisions": len(d), "positives": len(t), "base_rate": len(t) / len(arrivals) if arrivals else "",
+            "tp": tp, "fp": fp, "fn": fn, "tn": len(arrivals) - tp - fp - fn,
+            "precision": tp / len(d) if d else "", "recall": tp / len(t) if t else ""}
+
+
+def _percentile(scores, r):
+    vals = list(scores.values())
+    return sum(v < scores[r] for v in vals) / len(vals)
+
+
+_FLOW_TRUTH = {}
+
+
+def flow_truth(data, kind):
+    """Reference sets over the arrivals, using only rows 1..r for arrival r (cached per dataset)."""
+    key = (_sha(data.text().encode("utf-8")), kind)
+    if key in _FLOW_TRUTH:
+        return _FLOW_TRUTH[key]
+    rs = O.arrivals(data.n)
+    out = {"arrivals": rs}
+    if kind == "stream_desirable":
+        out["good"] = {r for r in rs if r in O.good_rows(data, 0.25, range(1, r + 1))}
+        out["front"] = {r for r in rs if r in O.pareto(data, range(1, r + 1))}
+        out["percentile"] = {r: _percentile(O.d2h(data, range(1, r + 1)), r) for r in rs}
+    elif kind == "stream_alert_pred":
+        out["high"] = {r for r in rs if any(data.value(r, g) is not None
+                                            and data.value(r, g) > O.median(data.values(g, range(1, r)))
+                                            for g in ("Effort-", "Defects-"))}
+    elif kind == "stream_alert_poor":
+        t = next(g for g, _ in data.goals())
+        before = lambda r: data.values(t, range(1, r))
+        out["poor"] = {r for r in rs if O.worse(data, t, data.value(r, t), O.median(before(r)))}
+        out["must"] = {r for r in rs if all(O.worse(data, t, data.value(r, t), b) for b in before(r))}
+    _FLOW_TRUTH[key] = out
+    return out
+
+
+def _running_mae(data, rs, preds, col):
+    pairs = [(preds[i], data.value(r, col), O.mean(data.values(col, range(1, r)))) for i, r in enumerate(rs)
+             if data.value(r, col) is not None]
+    model = O.mean([abs(p - a) for p, a, _ in pairs])
+    base = O.mean([abs(b - a) for _, a, b in pairs])
+    better = sum(abs(p - a) < abs(b - a) for p, a, b in pairs) / len(pairs)
+    return model, base, (model / base if base else ""), better
+
+
+def flow_metrics(data, kind, ans):
+    """Independent Flow metrics for one schema-valid answer (no self-reported statistic is used)."""
+    if kind in FLOW_FUTURE_KINDS:
+        tr = flow_truth(data, kind)
+        rs = tr["arrivals"]
+        items = ans["assessments"]
+        m = {"n_history": data.n - len(rs), "n_arrivals": len(rs)}
+    if kind == "stream_desirable":
+        yes = [r for r, e in zip(rs, items) if e["desirable"]]
+        no = [r for r in rs if r not in set(yes)]
+        m.update(confusion(yes, tr["good"], rs))
+        strict = confusion(yes, tr["front"], rs)
+        m.update(strict_positives=strict["positives"], strict_tp=strict["tp"], strict_precision=strict["precision"],
+                 strict_recall=strict["recall"],
+                 accepted_median_percentile=O.median([tr["percentile"][r] for r in yes]) if yes else "",
+                 rejected_median_percentile=O.median([tr["percentile"][r] for r in no]) if no else "",
+                 metric_type="desirability decisions vs the oracle's best-seen set",
+                 decision_basis="classification of observed records (goals visible at arrival)")
+        return m
+    if kind == "stream_alert_pred":
+        pe = [A.num(e["predicted_effort"]) for e in items]
+        pd = [A.num(e["predicted_defects"]) for e in items]
+        mae, base, ratio, better = _running_mae(data, rs, pe, "Effort-")
+        dmae, dbase, dratio, _ = _running_mae(data, rs, pd, "Defects-")
+        actual = [data.value(r, "Effort-") for r in rs]
+        alerts = [r for r, e in zip(rs, items) if e["alert"]]
+        m.update(confusion(alerts, tr["high"], rs))
+        m.update(predictions=len(pe), mae_model=mae, mae_baseline=base, mae_ratio=ratio,
+                 beats_baseline=mae < base, better_than_baseline_share=better, defects_mae_model=dmae,
+                 defects_mae_baseline=dbase, defects_mae_ratio=dratio, spearman_effort=O.spearman(pe, actual),
+                 self_match_share=sum(O.close(p, a) for p, a in zip(pe, actual) if a is not None) / len(pe),
+                 metric_type="streaming effort/defect prediction and alerts",
+                 decision_basis="prospective: predictions from history and earlier arrivals")
+        return m
+    if kind == "stream_alert_poor":
+        alerts = [r for r, e in zip(rs, items) if e["alert"]]
+        m.update(confusion(alerts, tr["poor"], rs))
+        m.update(must_alert=len(tr["must"]), must_alert_hit=len(tr["must"] & set(alerts)),
+                 metric_type="alert rule adherence",
+                 decision_basis="rule adherence on an observed outcome (not prediction)")
+        return m
+    if kind == "stream_summary":
+        k = O.arrivals_count(data.n)
+        hist = data.n - k
+        by_m = {int(A.num(e["after"])): e for e in ans["checkpoints"]}
+        checks = correct = fut = good = front = arr = avail = 0
+        gbase, fbase, pcts, detail, lists = [], [], [], [], []
+        for mm in (0, k // 2, k):
+            seen = range(1, hist + mm + 1)
+            e = by_m[mm]
+            for g, _ in data.goals():
+                s = e["summary"][g]
+                vs = data.values(g, seen)
+                oks = [A.num(s["n"]) == len(vs), O.close(A.num(s["mean"]), O.mean(vs)),
+                       O.close(A.num(s["min"]), min(vs)), O.close(A.num(s["max"]), max(vs))]
+                checks += len(oks)
+                correct += sum(oks)
+            short = A.rows(data, e["shortlist"], "shortlist")
+            lists.append(set(short))
+            gs, fs = O.good_rows(data, 0.25, seen), O.pareto(data, seen)
+            sc = O.d2h(data, seen)
+            f_ = sum(r > hist + mm for r in short)
+            g_ = sum(r in gs for r in short)
+            p_ = sum(r in fs for r in short)
+            a_ = sum(hist < r <= hist + mm for r in short)
+            v_ = sum(hist < r <= hist + mm for r in gs)
+            pc = [_percentile(sc, r) for r in short if r in sc]
+            fut, good, front, arr, avail = fut + f_, good + g_, front + p_, arr + a_, avail + v_
+            gbase.append(len(gs) / len(seen))
+            fbase.append(len(fs) / len(seen))
+            pcts.append(O.median(pc) if pc else "")
+            detail.append(f"after {mm}: good {g_}/5 front {p_}/5 future {f_} arrivals {a_} "
+                          f"(good arrivals visible {v_}) percentile {'' if not pc else format(O.median(pc), '.3f')}")
+        return {"n_history": hist, "n_arrivals": k, "checkpoints": 3, "summary_checks": checks,
+                "summary_correct": correct, "summary_fidelity": correct / checks, "shortlist_rows": 15,
+                "future_rows_used": fut, "good_hits": good, "good_precision": good / 15,
+                "good_base_rate": O.mean(gbase), "front_hits": front, "front_precision": front / 15,
+                "front_base_rate": O.mean(fbase), "median_percentile": _med([p for p in pcts if p != ""]),
+                "arrivals_shortlisted": arr, "good_arrivals_available": avail, "shortlist_changed": lists[0] != lists[-1],
+                "checkpoint_detail": "; ".join(detail),
+                "metric_type": "checkpoint shortlist quality and summary fidelity",
+                "decision_basis": "recommendation from rows visible at each checkpoint"}
+    raise ValueError(f"not a Flow kind: {kind}")
+
+
+def _flow_row(z, names, root, model, domain, t, k, rid, data, runs, reqs):
+    kind = A.REQUESTS[rid][0]
+    row, ctx, ans, sem = _attempt(z, names, root, model, domain, t, k, FLOW_STEP, rid, data, runs, reqs,
+                                  FLOW_FIELDS, dict(kind=kind, shuffled_gate="not_run", future_gate="not_applicable"
+                                                    if kind not in FLOW_FUTURE_KINDS else "not_run",
+                                                    integrity_valid=False, success=False))
+    if ctx is None:
+        return row
+    row["shuffled_gate"] = shuffled_gate(sem, rid)
+    row.update(flow_metrics(data, kind, ans))
+    row["frozen_base_pass"] = all(ok for _, ok, _ in ctx.items)
+    if kind in FLOW_FUTURE_KINDS:
+        row["future_gate"], row["future_detail"] = future_gate(sem, rid)
+        ok = row["future_gate"] == "pass"
+        if not ok:
+            row["exclusion_reason"] = f"future_{row['future_gate']}"
+    else:
+        ok = row["future_rows_used"] == 0
+        if not ok:
+            row["exclusion_reason"] = "future_rows_in_shortlist"
+    row.update(integrity_valid=ok, primary=ok, success=ok and row["frozen_base_pass"])
+    return row
+
+
+def extract_flow(archive=ARCHIVE, runs_csv=RUNS_CSV, requirements_csv=REQUIREMENTS_CSV, data_dir=DATA_DIR,
+                 model=MODEL, domains=DOMAINS):
+    runs = _index(runs_csv, ("model", "domain", "treatment", "trial", "skill_index"))
+    reqs = _index(requirements_csv, ("model", "domain", "treatment", "trial", "request_id"))
+    rows = []
+    with zipfile.ZipFile(archive) as z:
+        names = set(z.namelist())
+        root = archive_root(names, model)
+        for domain in domains:
+            if set(FLOW[domain]) != set(request_ids(domain, FLOW_STEP)):
+                raise ValueError(f"{FLOW[domain]} are not the frozen Flow requests of {domain}")
+            data = O.load(Path(data_dir) / DATASETS[domain])
+            for rid in FLOW[domain]:
+                for t in TREATMENTS:
+                    for k in TRIALS:
+                        rows.append(_flow_row(z, names, root, model, domain, t, k, rid, data, runs, reqs))
+    keys = [(r["domain"], r["treatment"], r["trial"], r["request_id"]) for r in rows]
+    if len(keys) != len(set(keys)):
+        raise ValueError("duplicate trial records")
+    return rows
+
+
+FLOW_SUMMARY_FIELDS = [
+    "scope", "domain", "treatment", "request_id", "kind",
+    "attempted", "executable", "schema_valid", "integrity_valid", "successful",
+    "generation_failed", "execution_failed", "answer_missing", "answer_invalid_json", "answer_schema_error",
+    "future_failed", "future_unverified", "future_rows_in_shortlist", "shuffled_failed_among_valid",
+    "delivery_rate", "conditional_success_rate",
+    "base_rate", "median_decisions", "median_precision", "median_recall", "median_strict_precision",
+    "median_strict_recall", "zero_decision_answers", "all_decision_answers",
+    "median_mae_ratio", "beats_baseline", "median_better_share", "median_defects_mae_ratio", "median_self_match",
+    "median_good_precision", "good_base_rate", "median_front_precision", "front_base_rate", "median_percentile",
+    "median_summary_fidelity", "median_arrivals_shortlisted",
+]
+
+
+def _flow_cell(scope, domain, treatment, rid, sel):
+    prim = [r for r in sel if r["primary"]]
+    succ = sum(bool(r["success"]) for r in prim)
+    reasons = [r["exclusion_reason"] for r in sel]
+    return {
+        "scope": scope, "domain": domain, "treatment": treatment, "request_id": rid, "kind": A.REQUESTS[rid][0],
+        "attempted": len(sel), "executable": sum(r["check_runs"] is True for r in sel),
+        "schema_valid": sum(r["answer_state"] == "valid" for r in sel), "integrity_valid": len(prim), "successful": succ,
+        "generation_failed": reasons.count("generation_failed") + reasons.count("not_attempted"),
+        "execution_failed": reasons.count("execution_failure") + reasons.count("execution_timeout"),
+        "answer_missing": reasons.count("answer_missing"), "answer_invalid_json": reasons.count("answer_invalid_json"),
+        "answer_schema_error": reasons.count("answer_schema_error"),
+        "future_failed": reasons.count("future_fail"),
+        "future_unverified": reasons.count("future_unverified") + reasons.count("future_not_run"),
+        "future_rows_in_shortlist": reasons.count("future_rows_in_shortlist"),
+        "shuffled_failed_among_valid": sum(r["shuffled_gate"] == "fail" for r in prim),
+        "delivery_rate": _rate(succ, len(sel)), "conditional_success_rate": _rate(succ, len(prim)),
+        "base_rate": _one(r["base_rate"] for r in prim) if prim else "",
+        "median_decisions": _med([r["decisions"] for r in prim]),
+        "median_precision": _med([r["precision"] for r in prim]), "median_recall": _med([r["recall"] for r in prim]),
+        "median_strict_precision": _med([r["strict_precision"] for r in prim]),
+        "median_strict_recall": _med([r["strict_recall"] for r in prim]),
+        "zero_decision_answers": sum(r["decisions"] == 0 for r in prim),
+        "all_decision_answers": sum(r["decisions"] != "" and r["decisions"] == r["n_arrivals"] for r in prim),
+        "median_mae_ratio": _med([r["mae_ratio"] for r in prim]),
+        "beats_baseline": sum(r["beats_baseline"] is True for r in prim),
+        "median_better_share": _med([r["better_than_baseline_share"] for r in prim]),
+        "median_defects_mae_ratio": _med([r["defects_mae_ratio"] for r in prim]),
+        "median_self_match": _med([r["self_match_share"] for r in prim]),
+        "median_good_precision": _med([r["good_precision"] for r in prim]),
+        "good_base_rate": _med([r["good_base_rate"] for r in prim]),
+        "median_front_precision": _med([r["front_precision"] for r in prim]),
+        "front_base_rate": _med([r["front_base_rate"] for r in prim]),
+        "median_percentile": _med([r["median_percentile"] for r in prim]),
+        "median_summary_fidelity": _med([r["summary_fidelity"] for r in prim]),
+        "median_arrivals_shortlisted": _med([r["arrivals_shortlisted"] for r in prim]),
+    }
+
+
+def summarize_flow(rows):
+    out = []
+    for d in DOMAINS:
+        for rid in FLOW[d]:
+            for t in TREATMENTS:
+                sel = [r for r in rows if r["domain"] == d and r["treatment"] == t and r["request_id"] == rid]
+                if sel:
+                    out.append(_flow_cell("domain_treatment", d, t, rid, sel))
+            sel = [r for r in rows if r["domain"] == d and r["request_id"] == rid]
+            if sel:
+                out.append(_flow_cell("domain", d, "all", rid, sel))
+    return out
+
+
+T7_FLOW_NOTES = [
+    "NASA and Apache have Flow adapters (`t7_validation/adapters/{nasa,apache}/flow.py`); they could be scored later "
+    "with this extractor's metric functions on their printed ANSWER lines, after an approved adapter run and a check "
+    "that they use the same arrival rule (last round(0.2 n) rows) and checkpoints (0, k//2, k).",
+    "Cars has no Flow adapter (only CAR-03/CAR-20 adapters exist), so CAR-07/08 cannot be scored for T7 without new "
+    "orchestration code.",
+]
+
+
+def flow_report(rows, summary, manifest):
+    cells = [s for s in summary if s["scope"] == "domain_treatment"]
+    doms = [s for s in summary if s["scope"] == "domain"]
+    lines = [
+        "# External metric, phase 5G: Flow — are streaming decisions, predictions and shortlists useful?",
+        "",
+        "**Status: post-observation analysis.** Added after the Task Talk; not part of the pre-registered plan in "
+        "`docs/hypotheses.md`. Arrival order, checkpoints and thresholds are the frozen ones; every reference set at "
+        "arrival r uses rows 1..r only (and r-1 for baselines and thresholds). Scores are recomputed from the archived "
+        "ANSWER lines and the recorded CSV values; no self-reported statistic is used.",
+        "",
+        "**Frozen request kinds.** CAR-07 labels each arriving vehicle desirable or not. NASA-07 predicts each "
+        "arrival's effort and defects and raises alerts. APACHE-07 raises alerts on observed performance. CAR-08, "
+        "NASA-08 and APACHE-08 all report summaries and a 5-row shortlist at checkpoints after 0, k/2 and k arrivals "
+        "(NASA-08 has no alerts).",
+        "",
+        "**Prediction versus rule adherence.** Only NASA-07 is prospective: its alerts are meant to come from "
+        "predictions made before the outcome is known. CAR-07 classifies vehicles whose goals are already in the "
+        "file, and APACHE-07 alerts on an observed benchmark result; those measure correct use of a rule on observed "
+        "data, not prediction.",
+        "",
+        "**References (post-hoc applications of frozen definitions).** CAR-07: the oracle's 'best seen' set "
+        "(Pareto-optimal or best 25% under any overall score among rows 1..r, as the frozen checkpoint checker uses), "
+        "and a strict reference, the Pareto front of rows 1..r. NASA-07 alerts: recorded Effort- or Defects- above "
+        "the median of rows 1..r-1 (the frozen alert-justification threshold applied to actual outcomes). APACHE-07: "
+        "Performance- worse than the median of rows 1..r-1 (frozen justification); worse than every earlier row is "
+        "the frozen required alert. NASA-07 baseline: mean Effort- of rows 1..r-1.",
+        "",
+        "**Integrity.** -07 answers need the archived future-arrivals rerun to pass (unverified reruns are excluded). "
+        "-08 answers must not shortlist rows that have not arrived. *Success* = the frozen checker's base checks all "
+        "pass; *delivery* = successes / all attempts.",
+        "",
+        "## Base rates (fixed by the data)",
+        "",
+    ]
+    lines += [
+        "| request | reference | positives / arrivals or base rate |", "|---|---|---|",
+    ]
+    for s in doms:
+        if s["kind"] == "stream_summary":
+            lines.append(f"| {s['request_id']} | best-seen set / Pareto front of visible rows | "
+                         f"{_pct(s['good_base_rate'])} / {_pct(s['front_base_rate'])} of visible rows (checkpoint mean) |")
+        elif s["base_rate"] != "":
+            lines.append(f"| {s['request_id']} | {'best-seen set' if s['kind'] == 'stream_desirable' else 'high outcome' if s['kind'] == 'stream_alert_pred' else 'worse than median so far'} | "
+                         f"{_pct(s['base_rate'])} of arrivals |")
+    lines += ["", "With base rates this high, 'accept or alert on everything' already scores precision equal to the "
+              "base rate; precision must be read against it.", ""]
+    for d in DOMAINS:
+        for rid in FLOW[d]:
+            kind = A.REQUESTS[rid][0]
+            sel = [x for x in cells if x["request_id"] == rid]
+            lines += [f"## {rid} (`{kind}`)", ""]
+            if kind == "stream_desirable":
+                lines += ["| T | attempted | executable | valid | median accepted | median precision | median recall | "
+                          "median strict precision | median strict recall | all accepted | successful | delivery |",
+                          "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+                for s in sel:
+                    lines.append(f"| {s['treatment']} | {s['attempted']} | {s['executable']} | {s['integrity_valid']} | "
+                                 f"{_num(s['median_decisions'], '.0f')} | {_num(s['median_precision'], '.2f')} | "
+                                 f"{_num(s['median_recall'], '.2f')} | {_num(s['median_strict_precision'], '.2f')} | "
+                                 f"{_num(s['median_strict_recall'], '.2f')} | {s['all_decision_answers']} | "
+                                 f"{s['successful']} | {_pct(s['delivery_rate'])} |")
+            elif kind == "stream_alert_pred":
+                lines += ["| T | attempted | executable | valid | median MAE ratio | beats baseline | median share "
+                          "better | median defects MAE ratio | median self-match | median alerts | median alert "
+                          "precision | median alert recall | successful | delivery |",
+                          "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+                for s in sel:
+                    lines.append(f"| {s['treatment']} | {s['attempted']} | {s['executable']} | {s['integrity_valid']} | "
+                                 f"{_num(s['median_mae_ratio'], '.2f')} | {s['beats_baseline']} | "
+                                 f"{_num(s['median_better_share'], '.2f')} | {_num(s['median_defects_mae_ratio'], '.2f')} "
+                                 f"| {_num(s['median_self_match'], '.2f')} | {_num(s['median_decisions'], '.0f')} | "
+                                 f"{_num(s['median_precision'], '.2f')} | {_num(s['median_recall'], '.2f')} | "
+                                 f"{s['successful']} | {_pct(s['delivery_rate'])} |")
+            elif kind == "stream_alert_poor":
+                lines += ["| T | attempted | executable | valid | median alerts | median precision | median recall | "
+                          "zero-alert answers | successful | delivery |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+                for s in sel:
+                    lines.append(f"| {s['treatment']} | {s['attempted']} | {s['executable']} | {s['integrity_valid']} | "
+                                 f"{_num(s['median_decisions'], '.0f')} | {_num(s['median_precision'], '.2f')} | "
+                                 f"{_num(s['median_recall'], '.2f')} | {s['zero_decision_answers']} | "
+                                 f"{s['successful']} | {_pct(s['delivery_rate'])} |")
+            else:
+                lines += ["| T | attempted | executable | schema valid | valid | median best-seen precision | median "
+                          "front precision | median d2h percentile | median arrivals shortlisted | median summary "
+                          "fidelity | future rows | successful | delivery |",
+                          "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+                for s in sel:
+                    lines.append(f"| {s['treatment']} | {s['attempted']} | {s['executable']} | {s['schema_valid']} | "
+                                 f"{s['integrity_valid']} | {_num(s['median_good_precision'], '.2f')} | "
+                                 f"{_num(s['median_front_precision'], '.2f')} | {_num(s['median_percentile'], '.3f')} | "
+                                 f"{_num(s['median_arrivals_shortlisted'], '.0f')} | "
+                                 f"{_num(s['median_summary_fidelity'], '.3f')} | {s['future_rows_in_shortlist']} | "
+                                 f"{s['successful']} | {_pct(s['delivery_rate'])} |")
+            lines.append("")
+    lines += ["## By domain and request", "",
+              "| domain | request | attempted | executable | schema valid | integrity valid | successful | delivery | "
+              "conditional | future fail / unverified | future rows | crashes | schema errors | invalid JSON | missing |",
+              "|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|"]
+    for s in doms:
+        lines.append(f"| {s['domain']} | {s['request_id']} | {s['attempted']} | {s['executable']} | {s['schema_valid']} | "
+                     f"{s['integrity_valid']} | {s['successful']} | {_pct(s['delivery_rate'])} | "
+                     f"{_pct(s['conditional_success_rate'])} | {s['future_failed']} / {s['future_unverified']} | "
+                     f"{s['future_rows_in_shortlist']} | {s['execution_failed'] + s['generation_failed']} | "
+                     f"{s['answer_schema_error']} | {s['answer_invalid_json']} | {s['answer_missing']} |")
+    lines += [
+        "", "## Limitations", "",
+        "- **References are oracle definitions, not customer outcomes.** 'Best seen', 'high' and 'worse than the median "
+        "so far' follow the frozen checker's rules applied to recorded values; they are not verified inventory value, "
+        "project overruns or service incidents.",
+        "- **High base rates.** Later arrivals are mostly better (Cars) or worse (Apache) than the history, and "
+        "above-median effort or defects covers most NASA arrivals, so precision is close to the base rate by default.",
+        "- **CAR-07 and APACHE-07 are not prediction.** They judge records whose outcomes are already in the file.",
+        "- **The future rerun is partial.** It changes only later arrivals' goals; a program that reads an arrival's "
+        "own recorded outcome is not caught. NASA-07's self-match share is a post-hoc indicator for that.",
+        "- **No APACHE-07 arrival is a worst-ever**, so the frozen required-alert rule never applies.",
+        "- **Silence passes the frozen alert rules.** NASA-07 and APACHE-07 checks examine only the alerts that were "
+        "raised (plus the worst-ever rule, which never applies), so an answer with few or no alerts passes; recall "
+        "shows what such answers miss.",
+        "- **Apache's Pareto front is the tied best rows of a single goal** (2 rows), so APACHE-08 front precision "
+        "cannot exceed 2/5; the best-seen set is the meaningful reference there.",
+        "- **Arrivals and checkpoints are not independent trials.** Three trials per cell, often fewer usable; no "
+        "statistical test is applied.",
+        "- **T7 is not scored in this phase.**",
+    ]
+    lines += [f"  - {n}" for n in T7_FLOW_NOTES]
+    lines += [
+        "", "## Provenance", "",
+        f"- Archive: `{manifest['inputs']['archive']['path']}` (sha256 `{manifest['inputs']['archive']['sha256']}`)",
+        f"- Code commit: `{manifest['git']['commit']}` on `{manifest['git']['branch']}`"
+        f"{' (uncommitted changes present)' if manifest['git']['dirty'] else ''}",
+        f"- Command: `{manifest['command']}`",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 # ---- phase 4B: T7 prediction through the existing validation adapters ----------------
 
 T7_PROTOCOL = "v2-common: every-fifth-row hold-out, training-mean baseline (t7_validation adapter)"
@@ -2890,7 +3373,7 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
                     "phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters; "
                     "phase 4C: Cars T7 prediction adapters; phase 5C: Fix observed alternatives (Cars, Apache); "
                     "phase 5D: Justify truthfulness; phase 5E: Remember shortlist quality; "
-                    "phase 5F: Certify agreement with the frozen statistical oracle",
+                    "phase 5F: Certify agreement with the frozen statistical oracle; phase 5G: Flow streaming quality",
         "status": "post-observation (added after the Task Talk; not pre-registered)",
         "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "command": "python -m harness.external" + (" " + " ".join(argv) if argv else ""),
@@ -2914,6 +3397,7 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
             "justify": JUSTIFY_PROTOCOL,
             "remember": REMEMBER_PROTOCOL,
             "certify": CERTIFY_PROTOCOL,
+            "flow": FLOW_PROTOCOL,
         },
         "inputs": {
             "archive": _file_info(archive),
@@ -3245,7 +3729,7 @@ def race_report(sel_rows, pred_rows, summary, manifest):
 
 
 def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=None, race=None, t7=None, fix=None,
-                  justify=None, remember=None, certify=None):
+                  justify=None, remember=None, certify=None, flow=None):
     out = guard_out(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     files = {
@@ -3300,6 +3784,13 @@ def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=N
             "certify_summary.csv": to_csv(csum, CERTIFY_SUMMARY_FIELDS),
             "certify_report.md": certify_report(crows, csum, manifest, crefs),
         })
+    if flow is not None:
+        lrows, lsum = flow
+        files.update({
+            "flow_quality.csv": to_csv(lrows, FLOW_FIELDS),
+            "flow_summary.csv": to_csv(lsum, FLOW_SUMMARY_FIELDS),
+            "flow_report.md": flow_report(lrows, lsum, manifest),
+        })
     for name, text in files.items():
         (out / name).write_text(text, encoding="utf-8")
     manifest = dict(manifest, outputs={n: {"sha256": _sha(t.encode("utf-8"))} for n, t in files.items()})
@@ -3335,10 +3826,12 @@ def main(argv=None):
     just = extract_justify(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
     rem = extract_remember(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
     cert = extract_certify(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
+    flow = extract_flow(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
     out = write_outputs(a.out, rows, summary, manifest, sel, sel_summary, (rsel, rpred, summarize_race(rsel, rpred)),
                         t7, (fix, summarize_fix(fix)), (just, summarize_justify(just)),
                         (rem, summarize_remember(rem)),
-                        (cert, summarize_certify(cert), certify_reference_table(a.data_dir, domains)))
+                        (cert, summarize_certify(cert), certify_reference_table(a.data_dir, domains)),
+                        (flow, summarize_flow(flow)))
     print(f"prediction: {len(rows)} attempts, {sum(r['primary'] for r in rows)} in the primary metric")
     print(f"selection:  {len(sel)} attempts, {sum(r['primary'] for r in sel)} in the primary metric")
     print(f"race selection:  {len(rsel)} attempts, {sum(r['primary'] for r in rsel)} in the primary metric")
@@ -3351,6 +3844,8 @@ def main(argv=None):
           f"{sum(bool(r['success']) for r in rem)} successful")
     print(f"certify:         {len(cert)} attempts, {sum(r['primary'] for r in cert)} integrity-valid, "
           f"{sum(bool(r['success']) for r in cert)} oracle-consistent")
+    print(f"flow:            {len(flow)} attempts, {sum(r['primary'] for r in flow)} integrity-valid, "
+          f"{sum(bool(r['success']) for r in flow)} successful")
     if t7 is not None:
         print(f"T7 prediction:   {len(t7)} requests, {sum(r['primary'] for r in t7)} in the primary metric")
     print(f"wrote {out}")

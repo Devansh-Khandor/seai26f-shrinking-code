@@ -186,6 +186,6 @@ Among 28 schema-valid prediction answers, the program's reported value disagreed
 ## Provenance
 
 - Archive: `harness/results/v2/gpt-oss-20b-3trials.zip` (sha256 `d1a51a3fa3711829ede726dd08e1f77da070fc3e3064fdcd1971d24974eb7683`)
-- Code commit: `6f580c8eaaf527c4292a03985ec17032268dc418` on `analysis/external-metrics` (uncommitted changes present)
+- Code commit: `3e9e0f0969eaf2752af9ad70df2b118dcdb165ec` on `analysis/external-metrics` (uncommitted changes present)
 - Command: `python -m harness.external`
 - Full input and output hashes: `manifest.json`.

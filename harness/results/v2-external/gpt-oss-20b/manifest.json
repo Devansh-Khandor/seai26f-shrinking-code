@@ -1,7 +1,7 @@
 {
-  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; phase 3: Race (guided vs random selection, model vs historical-mean prediction); phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters; phase 4C: Cars T7 prediction adapters; phase 5C: Fix observed alternatives (Cars, Apache); phase 5D: Justify truthfulness; phase 5E: Remember shortlist quality; phase 5F: Certify agreement with the frozen statistical oracle",
+  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; phase 3: Race (guided vs random selection, model vs historical-mean prediction); phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters; phase 4C: Cars T7 prediction adapters; phase 5C: Fix observed alternatives (Cars, Apache); phase 5D: Justify truthfulness; phase 5E: Remember shortlist quality; phase 5F: Certify agreement with the frozen statistical oracle; phase 5G: Flow streaming quality",
   "status": "post-observation (added after the Task Talk; not pre-registered)",
-  "generated_utc": "2026-11-25T15:03:12+00:00",
+  "generated_utc": "2026-11-25T15:16:51+00:00",
   "command": "python -m harness.external",
   "model": "gpt-oss-20b",
   "protocol": {
@@ -287,6 +287,33 @@
       "direction": "for oracle-'different' pairs of the groups kind: does the order of the reported group means favour the same group as the oracle (sign of Cliff's delta under the outcome's goal direction)? The schema has no effect-size field, so effect-size error is not measurable; group n/median/mean accuracy is reported instead (median within the checker's tolerance of any median, mean within O.close)",
       "frozen_base_pass": "every base check of harness.answers.check_request passes (group statistics and verdicts)",
       "integrity_valid": "ran and ANSWER accepted by the frozen format check; the answers cite computed group statistics, not row values, so there are no fabricated cells to gate on; archived shuffled-rerun verdict failures are recorded, not gating"
+    },
+    "flow": {
+      "status": "post-hoc (added after the Task Talk); arrival order, checkpoints and thresholds are the frozen ones, and every reference set is computed from rows that have already arrived",
+      "requests": {
+        "cars": [
+          "CAR-07",
+          "CAR-08"
+        ],
+        "nasa": [
+          "NASA-07",
+          "NASA-08"
+        ],
+        "apache": [
+          "APACHE-07",
+          "APACHE-08"
+        ]
+      },
+      "request_mapping": "frozen kinds: CAR-07 stream_desirable; NASA-07 stream_alert_pred (per-arrival effort/defect predictions and alerts); APACHE-07 stream_alert_poor; CAR-08, NASA-08, APACHE-08 stream_summary (checkpoint summaries and a 5-row shortlist). NASA-08 has no alerts",
+      "arrivals": "harness.oracle.arrivals: the last round(0.2 n) rows in file order; the rows before are history. At arrival r the visible rows are 1..r (r's own recorded columns are in the file the program reads)",
+      "CAR-07": "decision = desirable. Reference (post-hoc application of the oracle's own 'best seen' set, the one the frozen stream_summary checker uses): r in harness.oracle.good_rows(data, 0.25, rows 1..r) \u2014 Pareto-optimal or in the best 25% under any aggregate among rows seen so far. Strict reference: r on the Pareto front of rows 1..r. Precision = tp/(tp+fp), recall = tp/(tp+fn); blank with no decisions/positives. Labels a record whose goals are already observed: classification of observed records, not prediction",
+      "NASA-07 predictions": "MAE of predicted_effort against the recorded Effort-; baseline = mean Effort- of rows 1..r-1 (history plus earlier arrivals only); mae_ratio = model/baseline; better_than_baseline_share = arrivals with |pred - actual| < |baseline - actual|; the same for predicted_defects. Self-reported statistics are not used. self_match_share = predictions within O.close of the arrival's own recorded Effort- (a post-hoc indicator of self-leakage, which the frozen future rerun cannot detect because it changes only later arrivals)",
+      "NASA-07 alerts": "post-hoc application of the frozen alert-justification threshold to actual outcomes: an arrival is high when its recorded Effort- or Defects- exceeds the median of rows 1..r-1. Prospective: the alert is supposed to come from predictions made before the outcome is known",
+      "APACHE-07": "rule adherence, not prediction: the alert is raised after the arrival's Performance- is observed. Positive = worse than the median of rows 1..r-1 (the frozen justification threshold); must_alert = worse than every earlier row (the frozen required alert)",
+      "-08 checkpoints": "after m = 0, k//2, k arrivals, visible rows 1..history+m. summary fidelity = share of per-goal n/mean/min/max values correct; future_rows_used = shortlisted rows not yet arrived (leakage); good_precision = shortlisted rows in O.good_rows(data, 0.25, visible) / 5 (frozen pass needs >= 4/5); front_precision = rows on the Pareto front of visible rows / 5; percentile = share of visible rows with strictly lower d2h (bounds from visible rows); arrivals_shortlisted and good_arrivals_available show whether new arrivals were incorporated",
+      "integrity_valid": "ran, ANSWER accepted by the frozen format check, and for -07 the archived future rerun passed (fail = earlier decisions changed when only later arrivals changed; unverified = the rerun crashed, timed out or was not run, excluded); for -08 no shortlisted row from the future",
+      "success": "the frozen checker's own base checks all pass (recomputed); quality metrics are reported alongside",
+      "counting": "one attempt per trial; arrivals and checkpoints are not independent trials"
     }
   },
   "inputs": {
@@ -329,8 +356,8 @@
     "code": {
       "external": {
         "path": "harness/external.py",
-        "sha256": "9e434c632cc0132c84610604d71b8b70f9723e0a6f582f23a5ed14f04c618342",
-        "bytes": 203111
+        "sha256": "1c62568b0050f4d3d215430fae271eeffe628b04dbaf4718bc49fdb6c1ab57ec",
+        "bytes": 236012
       },
       "answers": {
         "path": "harness/answers.py",
@@ -472,7 +499,7 @@
     }
   },
   "git": {
-    "commit": "6f580c8eaaf527c4292a03985ec17032268dc418",
+    "commit": "3e9e0f0969eaf2752af9ad70df2b118dcdb165ec",
     "branch": "analysis/external-metrics",
     "dirty": true
   },
@@ -489,7 +516,7 @@
       "sha256": "bfdf4537a3c13346996dbd2b9c6499ec6e5da58424e4827ca37ee7b8a7b222cd"
     },
     "prediction_report.md": {
-      "sha256": "f17112329f87b9c29cf3c5d5bffa1e6aaaf7ec4f13f462c10a599505036ff19e"
+      "sha256": "11b5be7ffb61db43c1a7d0b38e09f5aef9b60f40a2660c57c3bfa4801e40c86b"
     },
     "selection_quality.csv": {
       "sha256": "35479bc46e332515390b91ffe682fe249924012c89835ab9633f249db6a65dda"
@@ -498,7 +525,7 @@
       "sha256": "3ecb40ca54175f50950b4ed8150d1ef79bf83a3eaded5591c8f59596f90fcfb0"
     },
     "selection_report.md": {
-      "sha256": "f457b44b94116294569bca30a12f350fd52806f71a6a9b34f14f445ec642800d"
+      "sha256": "8fdf6dd5959a57e36d41ab7555586eb59b8272e62e59c50db738f9c1ac2a62c9"
     },
     "race_selection.csv": {
       "sha256": "48487d69d56add1df70a6fd99aba8f5b56da4d4a272d9824fd6227f8bf08ca31"
@@ -510,13 +537,13 @@
       "sha256": "97b8d2880665321a8aa278ebd11e4b12d2dc546e3291fd87a1bae7cc6d0cc9b9"
     },
     "race_report.md": {
-      "sha256": "e1599bc814f911af892016cec57ae791e7ceab233fda4da7a0ec256f76033352"
+      "sha256": "b379725e8f73b3cb4a4f562d136550252df3935773966440245e786c8ebcb717"
     },
     "t7_prediction.csv": {
       "sha256": "5a571583769304a7996d28ab319cb9a4e5d45fafc1e3aaae328c324b9ef71034"
     },
     "t7_prediction_report.md": {
-      "sha256": "b8529c62671d9d772fa6fe46c7a4601dcf72f5ebe21108e7f3c61f69be9fe63a"
+      "sha256": "32005abafd40ebd1c28b17e00afc535cebc1d7c47c2329ccdce11093bf8de7f4"
     },
     "fix_quality.csv": {
       "sha256": "1dcaee78d75cba27291c10c2d8b7f50383110671092d4c318fdb4c8f6acd90a1"
@@ -525,7 +552,7 @@
       "sha256": "9068946bc2a3c65d963cdff7b4d450ace7dfd2332bee6a30ba7234b54affce92"
     },
     "fix_report.md": {
-      "sha256": "809d70c7b25128a29474078a9225dfd62fd1b0937e91a96d0de1baaad5e61f7c"
+      "sha256": "e8feb2b8ba579c45dd698d394fd2a2eb9434c1225341a46ebb6d4e7ee6dfc941"
     },
     "justify_quality.csv": {
       "sha256": "776656d556a3cda7cdbc059bcb7c8162db216f472150e232cac0c8be40a836fd"
@@ -534,7 +561,7 @@
       "sha256": "bdca193b453eef83d86ed325c9789a320536a63017d9b8bf50aea07714d7eaed"
     },
     "justify_report.md": {
-      "sha256": "04ebfcdd60da85afdb301d8a34c8e88516d7664a7b9237d3479920e13c01520a"
+      "sha256": "97abab42cb284f469771adcc459fea8f5ba30aacde69608423a99dfce29872a9"
     },
     "remember_quality.csv": {
       "sha256": "18284e1d182931af5a3806099cd74fa8d0ede9b2202505a3f638f72b03665b03"
@@ -543,7 +570,7 @@
       "sha256": "7e6236aef249cb0e4bbaaa1daff39de850d956636caf0c361e4f743654b002ce"
     },
     "remember_report.md": {
-      "sha256": "17325d3d02a4567434fcfae9ed6efd49914ba88eea7cc35490d16da1f6bd7a12"
+      "sha256": "370a7058aae917403611340fc67e5169533a7f36f282adbfa2975d5c54eed9e0"
     },
     "certify_quality.csv": {
       "sha256": "ec7dbe8419a98888b8f02361234758f1cf04fdebe89fe6aa1c6b29c2cb3998ea"
@@ -552,7 +579,16 @@
       "sha256": "34621e5ef002238beb07932e5960cacf4b7d87278888a5d7b2c49cd3020c5bed"
     },
     "certify_report.md": {
-      "sha256": "e704196efea2d3b9ba0649bd14a81d101c76ff2cb8fc2bf23716fbc25dcf7c8c"
+      "sha256": "8cde8ab2514f3d858f776d94ca1adbf2641820fcfb86685ed01f56cfda743179"
+    },
+    "flow_quality.csv": {
+      "sha256": "5479232ab0fd2235de5477973f727c20e22b56f33af54517985c4ab7a5e5b4ed"
+    },
+    "flow_summary.csv": {
+      "sha256": "57f8232c46330850719eeae801546cfe3f6acb70ea56041bc70a8180511037ee"
+    },
+    "flow_report.md": {
+      "sha256": "cceb3799b6b297cdcc1466cc35043f97188f41b982f90d1ac24985228fcaad48"
     }
   }
 }

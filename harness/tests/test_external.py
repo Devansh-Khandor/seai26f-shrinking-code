@@ -468,7 +468,8 @@ class TestOutputs(unittest.TestCase):
                               "fix_quality.csv", "fix_summary.csv", "fix_report.md",
                               "justify_quality.csv", "justify_summary.csv", "justify_report.md",
                               "remember_quality.csv", "remember_summary.csv", "remember_report.md",
-                              "certify_quality.csv", "certify_summary.csv", "certify_report.md"})
+                              "certify_quality.csv", "certify_summary.csv", "certify_report.md",
+                              "flow_quality.csv", "flow_summary.csv", "flow_report.md"})
             self.assertEqual({p: sha(p) for p in before}, before)
             with open(out / "prediction_mae.csv", newline="") as f:
                 got = list(csv.DictReader(f))
@@ -2220,4 +2221,259 @@ class TestCertifyRealArchive(unittest.TestCase):
 
     def test_reproducible_and_untouched(self):
         self.assertEqual(E.to_csv(self.rows, E.CERTIFY_FIELDS), E.to_csv(self.again, E.CERTIFY_FIELDS))
+        self.assertEqual(sha(E.ARCHIVE), self.before)
+
+
+# ---- phase 5G: Flow ------------------------------------------------------------------
+
+# ten projects: rows 1-8 history, rows 9-10 arrivals (round(0.2 * 10) = 2)
+NASA_FLOW_CSV = "Kloc+,Effort-,Defects-\n" + "".join(
+    f"{k},{e},{d}\n" for k, e, d in [(10, 100, 5), (20, 200, 6), (30, 300, 7), (40, 400, 8), (50, 500, 9),
+                                     (60, 600, 10), (70, 700, 11), (80, 800, 12), (90, 50, 20), (95, 900, 1)])
+# twenty cars: rows 1-16 history, rows 17-20 arrivals, checkpoints after 0, 2 and 4 arrivals
+CARS_FLOW_CSV = "Clndrs,Lbs-,Mpg+\n" + "".join(
+    [f"4,{3000 + 50 * i},{15 + i}\n" for i in range(16)] + ["4,1500,50\n", "4,4000,10\n", "4,1400,55\n", "4,5000,9\n"])
+
+
+def _assess(rows_, **fields):
+    return {"assessments": [dict({"row": r}, **{f: v[i] for f, v in fields.items()}) for i, r in enumerate(rows_)]}
+
+
+def _flow_sem(rid, failed=(), future="ran"):
+    runs = {"base": "ran", "shuffled": "ran"}
+    if future is not None:
+        runs["future"] = future
+    return {"runs": runs, "requests": [{"request_id": rid, "failed": list(failed)}]}
+
+
+class TestFlowRules(unittest.TestCase):
+    def test_arrival_ordering(self):
+        d = _data(NASA_FLOW_CSV)
+        self.assertEqual(O.arrivals(d.n), [9, 10])
+        ok = _assess([9, 10], predicted_effort=[100, 800], predicted_defects=[9, 9], alert=[False, True])
+        self.assertTrue(all(name != "base:answer format" for name, _, _ in A.check_request("NASA-07", d, ok).items))
+        bad = _assess([10, 9], predicted_effort=[100, 800], predicted_defects=[9, 9], alert=[False, True])
+        detail = [x for n, ok_, x in A.check_request("NASA-07", d, bad).items if not ok_][0]
+        self.assertIn("in order", detail)
+
+    def test_historical_only_baseline(self):
+        d = _data(NASA_FLOW_CSV)
+        mae, base, ratio, better = E._running_mae(d, [9, 10], [100, 800], "Effort-")
+        b9, b10 = O.mean([100, 200, 300, 400, 500, 600, 700, 800]), O.mean([100, 200, 300, 400, 500, 600, 700, 800, 50])
+        self.assertAlmostEqual(base, (abs(b9 - 50) + abs(b10 - 900)) / 2)
+        self.assertAlmostEqual(mae, (50 + 100) / 2)
+        self.assertAlmostEqual(ratio, mae / base)
+        self.assertEqual(better, 1.0)
+        # a later arrival's value never enters an earlier baseline
+        d2 = _data(NASA_FLOW_CSV.replace("95,900,1", "95,90000,1"))
+        self.assertAlmostEqual(abs(O.mean(d2.values("Effort-", range(1, 9))) - 50), abs(b9 - 50))
+
+    def test_truth_uses_only_rows_seen(self):
+        d = _data(NASA_FLOW_CSV)
+        tr = E.flow_truth(d, "stream_alert_pred")
+        # row 9: effort 50 below the history median, defects 20 above -> high; row 10: effort 900 above -> high
+        self.assertEqual(tr["high"], {9, 10})
+        later = _data(NASA_FLOW_CSV.replace("95,900,1", "95,1,0"))
+        self.assertIn(9, E.flow_truth(later, "stream_alert_pred")["high"])   # row 9 unchanged by row 10
+        self.assertNotIn(10, E.flow_truth(later, "stream_alert_pred")["high"])
+
+    def test_future_gate(self):
+        self.assertEqual(E.future_gate(_flow_sem("CAR-07"), "CAR-07")[0], "pass")
+        leak = _flow_sem("CAR-07", ["future:no use of future arrivals: changing only later arrivals changed 9/40"])
+        self.assertEqual(E.future_gate(leak, "CAR-07")[0], "fail")
+        crash = _flow_sem("CAR-07", ["future:program runs: crashed"], future="crashed")
+        self.assertEqual(E.future_gate(crash, "CAR-07")[0], "unverified")
+        self.assertEqual(E.future_gate(_flow_sem("CAR-07", future=None), "CAR-07")[0], "not_run")
+        self.assertEqual(E.future_gate(_flow_sem("CAR-08"), "CAR-07")[0], "not_run")
+
+    def test_confusion_and_empty_cases(self):
+        c = E.confusion([1, 2, 3], {2, 3, 4}, [1, 2, 3, 4, 5])
+        self.assertEqual((c["tp"], c["fp"], c["fn"], c["tn"]), (2, 1, 1, 1))
+        self.assertAlmostEqual(c["precision"], 2 / 3)
+        self.assertAlmostEqual(c["recall"], 2 / 3)
+        self.assertEqual(c["base_rate"], 0.6)
+        none = E.confusion([], {2}, [1, 2])
+        self.assertEqual((none["precision"], none["recall"], none["fn"]), ("", 0.0, 1))
+        nopos = E.confusion([1], set(), [1, 2])
+        self.assertEqual((nopos["precision"], nopos["recall"], nopos["fp"]), (0.0, "", 1))
+
+    def test_nasa_alerts_and_self_match(self):
+        d = _data(NASA_FLOW_CSV)
+        m = E.flow_metrics(d, "stream_alert_pred", _assess([9, 10], predicted_effort=[50, 900],
+                                                         predicted_defects=[20, 1], alert=[False, False]))
+        self.assertEqual((m["decisions"], m["precision"], m["recall"], m["fn"]), (0, "", 0.0, 2))
+        self.assertEqual(m["self_match_share"], 1.0)        # copying the recorded outcome is flagged
+        self.assertEqual(m["mae_model"], 0.0)
+
+    def test_apache_rule_adherence(self):
+        csv_ = "base,a,Performance-\n" + "".join(f"1,{i % 2},{v}\n" for i, v in enumerate(
+            [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 5, 95, 500, 120]))
+        d = _data(csv_)
+        tr = E.flow_truth(d, "stream_alert_poor")
+        self.assertEqual(O.arrivals(d.n), [17, 18, 19, 20])
+        self.assertEqual((tr["poor"], tr["must"]), ({18, 19, 20}, {19}))
+        m = E.flow_metrics(d, "stream_alert_poor", _assess([17, 18, 19, 20], alert=[True, False, True, False]))
+        self.assertEqual((m["tp"], m["fp"], m["fn"], m["must_alert"], m["must_alert_hit"]), (1, 1, 2, 1, 1))
+        self.assertIn("not prediction", m["decision_basis"])
+
+    def test_desirable_against_seen_rows(self):
+        d = _data(CARS_FLOW_CSV)
+        tr = E.flow_truth(d, "stream_desirable")
+        self.assertEqual(tr["arrivals"], [17, 18, 19, 20])
+        self.assertTrue({17, 19} <= tr["good"] and {17, 19} <= tr["front"])
+        self.assertNotIn(18, tr["front"])
+        m = E.flow_metrics(d, "stream_desirable", _assess([17, 18, 19, 20], desirable=[True, False, True, False]))
+        self.assertEqual((m["strict_tp"], m["strict_precision"]), (2, 1.0))
+        self.assertLessEqual(m["accepted_median_percentile"], m["rejected_median_percentile"])
+
+    def _checkpoints(self, d, lists):
+        k = O.arrivals_count(d.n)
+        cps = []
+        for mm, short in zip((0, k // 2, k), lists):
+            seen = range(1, d.n - k + mm + 1)
+            summ = {g: {"n": len(d.values(g, seen)), "mean": O.mean(d.values(g, seen)), "min": min(d.values(g, seen)),
+                        "max": max(d.values(g, seen))} for g, _ in d.goals()}
+            cps.append({"after": mm, "summary": summ, "shortlist": short})
+        return {"checkpoints": cps}
+
+    def test_checkpoint_scoring(self):
+        d = _data(CARS_FLOW_CSV)
+        ans = self._checkpoints(d, [[16, 15, 14, 13, 12], [17, 16, 15, 14, 13], [19, 17, 16, 15, 14]])
+        m = E.flow_metrics(d, "stream_summary", ans)
+        self.assertEqual((m["summary_fidelity"], m["future_rows_used"], m["arrivals_shortlisted"]), (1.0, 0, 3))
+        self.assertTrue(m["shortlist_changed"])
+        items = A.check_request("CAR-08", d, ans).items
+        hits = [int(x.split("good ")[1].split("/")[0]) for x in m["checkpoint_detail"].split("; ")]
+        self.assertEqual(all(ok for _, ok, _ in items), all(h >= 4 for h in hits))   # frozen rule: >= 4 of 5
+        leak = self._checkpoints(d, [[19, 15, 14, 13, 12], [17, 16, 15, 14, 13], [19, 17, 16, 15, 14]])
+        m = E.flow_metrics(d, "stream_summary", leak)
+        self.assertEqual(m["future_rows_used"], 1)
+        self.assertFalse(all(ok for _, ok, _ in A.check_request("CAR-08", d, leak).items))
+
+    def test_unknown_kind(self):
+        with self.assertRaises(ValueError):
+            E.flow_metrics(_data(NASA_FLOW_CSV), "groups", {})
+
+
+class TestFlowExtract(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        tmp = Path(cls.tmp.name)
+        cars = O.load(E.DATA_DIR / "auto93.csv")
+        rs = O.arrivals(cars.n)
+        good = E.flow_truth(cars, "stream_desirable")["good"]
+        honest = json.dumps(_assess(rs, desirable=[r in good for r in rs]))
+        k = len(rs)
+        hist = cars.n - k
+        front = lambda mm: sorted(O.pareto(cars, range(1, hist + mm + 1)))[:5]
+        cps = []
+        for mm in (0, k // 2, k):
+            seen = range(1, hist + mm + 1)
+            cps.append({"after": mm, "shortlist": front(mm), "summary": {g: {
+                "n": len(cars.values(g, seen)), "mean": O.mean(cars.values(g, seen)), "min": min(cars.values(g, seen)),
+                "max": max(cars.values(g, seen))} for g, _ in cars.goals()}})
+        summ = json.dumps({"checkpoints": cps})
+        leaky = json.loads(summ)
+        leaky["checkpoints"][0]["shortlist"][0] = cars.n            # a row that has not arrived yet
+        both = lambda a, b: check_txt(f"ANSWER CAR-07 {a}\nANSWER CAR-08 {b}")
+        scen = {("T1", 1): ("ok", both(honest, summ), _flow_sem("CAR-07")),
+                ("T1", 2): ("ok", both(honest, json.dumps(leaky)),
+                            _flow_sem("CAR-07", ["future:no use of future arrivals: changed 9/40"])),
+                ("T1", 3): ("ok", both(honest, summ), _flow_sem("CAR-07", ["future:program runs: crashed"], "crashed")),
+                ("T2", 1): ("parse_failed", None, None),
+                ("T2", 2): ("ok", check_txt("ANSWER CAR-07 {}", runs=False), {}),
+                ("T2", 3): ("ok", both(json.dumps(_assess(rs[::-1], desirable=[True] * k)), "{oops}"),
+                            _flow_sem("CAR-07")),
+                ("T4", 1): ("ok", check_txt("nothing"), _flow_sem("CAR-07"))}
+        cls.archive, cls.runs, cls.reqs = tmp / "z.zip", tmp / "runs.csv", tmp / "req.csv"
+        with zipfile.ZipFile(cls.archive, "w") as z:
+            for (t, kk), (st, chk, sem) in scen.items():
+                if chk:
+                    z.writestr(E.entry_name(ROOT, MODEL, "cars", t, kk, 4, "check.txt"), chk)
+                    if sem:
+                        sem = dict(sem, requests=sem["requests"] + [{"request_id": "CAR-08", "failed": []}])
+                        z.writestr(E.entry_name(ROOT, MODEL, "cars", t, kk, 4, "semantic.json"), json.dumps(sem))
+        cls.runs.write_text("model,domain,treatment,trial,skill_index,status,runs,semantic\n" + "".join(
+            f"{MODEL},cars,{t},{kk},4,{st},True,pass\n" for (t, kk), (st, _, _) in scen.items()))
+        cls.reqs.write_text("model,domain,treatment,trial,request_id,status\n" + "".join(
+            f"{MODEL},cars,{t},{kk},{r},pass\n" for (t, kk) in scen for r in ("CAR-07", "CAR-08")))
+        cls.before = sha(cls.archive)
+        cls.rows = E.extract_flow(cls.archive, cls.runs, cls.reqs, E.DATA_DIR, domains=("cars",))
+        cls.by = {(r["treatment"], r["trial"], r["request_id"]): r for r in cls.rows}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_outcomes_and_denominators(self):
+        self.assertEqual(len(self.rows), 36)
+        want = {("T1", 1): "", ("T1", 2): "future_fail", ("T1", 3): "future_unverified",
+                ("T2", 1): "generation_failed", ("T2", 2): "execution_failure", ("T2", 3): "answer_schema_error",
+                ("T4", 1): "answer_missing", ("T3", 1): "not_attempted"}
+        for (t, k), reason in want.items():
+            r = self.by[(t, k, "CAR-07")]
+            self.assertEqual(r["exclusion_reason"], reason, (t, k))
+            if reason:
+                self.assertFalse(r["success"] or r["primary"])
+        r = self.by[("T1", 1, "CAR-07")]
+        self.assertEqual((r["precision"], r["recall"], r["future_gate"], r["success"]), (1.0, 1.0, "pass", True))
+        self.assertEqual(self.by[("T1", 2, "CAR-07")]["answer_state"], "valid")    # valid schema, excluded by gate
+        self.assertEqual(self.by[("T1", 1, "CAR-08")]["future_gate"], "not_applicable")
+        self.assertTrue(self.by[("T1", 1, "CAR-08")]["primary"])
+        leak = self.by[("T1", 2, "CAR-08")]
+        self.assertEqual((leak["exclusion_reason"], leak["future_rows_used"], leak["primary"]),
+                         ("future_rows_in_shortlist", 1, False))
+        self.assertEqual(self.by[("T2", 3, "CAR-08")]["exclusion_reason"], "answer_invalid_json")
+
+    def test_summary(self):
+        s = {(x["scope"], x["treatment"], x["request_id"]): x for x in E.summarize_flow(self.rows)}
+        t1 = s[("domain_treatment", "T1", "CAR-07")]
+        self.assertEqual((t1["attempted"], t1["executable"], t1["schema_valid"], t1["integrity_valid"],
+                          t1["successful"], t1["future_failed"], t1["future_unverified"]), (3, 3, 3, 1, 1, 1, 1))
+        self.assertAlmostEqual(t1["delivery_rate"], 1 / 3)
+        c8 = s[("domain_treatment", "T1", "CAR-08")]
+        self.assertEqual((c8["integrity_valid"], c8["future_rows_in_shortlist"]), (2, 1))
+        t2 = s[("domain_treatment", "T2", "CAR-07")]
+        self.assertEqual((t2["integrity_valid"], t2["delivery_rate"], t2["conditional_success_rate"]), (0, 0.0, ""))
+
+    def test_archive_untouched(self):
+        self.assertEqual(sha(self.archive), self.before)
+
+
+class TestFlowRealArchive(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.before = sha(E.ARCHIVE)
+        cls.rows = E.extract_flow()
+        cls.again = E.extract_flow()
+
+    def test_all_attempts(self):
+        self.assertEqual(len(self.rows), 108)
+        for rid in ("CAR-07", "CAR-08", "NASA-07", "NASA-08", "APACHE-07", "APACHE-08"):
+            self.assertEqual(sum(r["request_id"] == rid for r in self.rows), 18)
+
+    def test_agrees_with_frozen_checker(self):
+        z = zipfile.ZipFile(E.ARCHIVE)
+        for r in self.rows:
+            if r["answer_state"] != "valid":
+                continue
+            data = O.load(E.DATA_DIR / E.DATASETS[r["domain"]])
+            ans = A.parse_answers(E.split_check(z.read(r["check_entry"]).decode())[1])[r["request_id"]]
+            items = A.check_request(r["request_id"], data, ans).items
+            self.assertEqual(all(ok for _, ok, _ in items), r["frozen_base_pass"], (r["request_id"], r["treatment"]))
+            if r["kind"] == "stream_summary":
+                seen_fail = any(not ok and "only uses seen rows" in n for n, ok, _ in items)
+                self.assertEqual(seen_fail, r["future_rows_used"] > 0)
+            if r["kind"] == "stream_alert_poor" and r["decisions"]:
+                unjustified = sum(not ok and "alert is justified" in n for n, ok, _ in items)
+                self.assertEqual(unjustified, r["fp"])
+
+    def test_success_implies_valid(self):
+        for r in self.rows:
+            if r["success"]:
+                self.assertTrue(r["primary"] and r["integrity_valid"] and r["frozen_base_pass"])
+
+    def test_reproducible_and_untouched(self):
+        self.assertEqual(E.to_csv(self.rows, E.FLOW_FIELDS), E.to_csv(self.again, E.FLOW_FIELDS))
         self.assertEqual(sha(E.ARCHIVE), self.before)
