@@ -1,0 +1,91 @@
+# Apache Server Configuration Optimization
+
+**The Shrinking-Code Experiment — CSC 591**
+
+This directory contains the Apache T7 cumulative Python implementation.
+
+Dataset: `data/raw/Apache_AllMeasurements.csv`
+
+Frozen requirements: `docs/requirements_apache.md`
+
+## Dataset
+
+- 192 historical server configurations
+- 8 adjustable binary settings
+- 1 constant setting (`base`)
+- 1 optimization goal: `Performance-` (minimize)
+
+## Implementation
+
+| Step | Skill | Requirements | Module | Status |
+|---|---|---|---|---|
+| 1 | Remember | APACHE-01/02 | remember.py | Implemented |
+| 2 | Guess | APACHE-03/04 | guess.py | Implemented |
+| 3 | Certify | APACHE-05/06 | certify.py | Implemented |
+| 4 | Flow | APACHE-07/08 | flow.py | Implemented |
+| 5 | Blame | APACHE-09/10 | blame.py | Implemented |
+| 6 | Justify | APACHE-11/12 | justify.py | Implemented |
+| 7 | Choose | APACHE-13/14 | choose.py | Implemented |
+| 8 | Fix | APACHE-15/16 | fix.py | Implemented |
+| 9 | Spot | APACHE-17/18 | spot.py | Implemented |
+| 10 | Race | APACHE-19/20 | race.py | Implemented |
+
+Later skills will reuse earlier functionality.
+
+## Step 1: Remember
+
+APACHE-01 summarizes historical performance and identifies
+the best and worst configurations.
+
+APACHE-02 identifies favorable configurations using the
+lowest 25% of recorded performance values, including ties,
+and compares setting frequencies against the remaining records.
+
+This threshold is an implementation choice, not a statistical
+significance test.
+
+## Reproduce
+
+From the repository root:
+
+    python3 human_t7/apache/remember.py
+
+Run the tests:
+
+    python3 -m unittest discover -s human_t7/apache/tests -v
+
+## Evaluation
+
+The implementation uses Python's standard library.
+
+Source snapshots will be preserved using Git tags
+`t7-apache-step1` through `t7-apache-step10`.
+
+One cumulative T7 implementation run is required.
+
+The tests provide behavioral checks but are not proof
+of universal semantic correctness.
+
+## Final Experiment Summary
+
+The cumulative Apache T7 implementation covers all ten
+skills and twenty frozen requirements.
+
+- Final automated test result: 113/113 passing.
+- Final implementation checkpoint: `t7-apache-step10`.
+- Total new implementation LOC: 1875.
+- Primary new LOC for Steps 2-10: 1713.
+- Deleted implementation LOC: 0.
+- Separately measured new test LOC: 1662.
+
+Detailed results: [RESULTS.md](RESULTS.md)
+
+Protocol, limitations, and reproducibility:
+[EXPERIMENT.md](EXPERIMENT.md)
+
+Read-only LOC auditor:
+[`audit_apache_harness_loc.py`](audit_apache_harness_loc.py)
+
+T7 is one cumulative human-directed, AI-assisted
+implementation sequence rather than a collection of
+independent treatment repetitions.
