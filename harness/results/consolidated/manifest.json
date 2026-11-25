@@ -1,0 +1,38 @@
+{
+  "phase": "6A consolidation (post-hoc synthesis; nothing re-run)",
+  "inputs": {
+    "harness/results/v2/runs.csv": "77223c0305bfb5ed8c5105cfec11e07d9906ce922d0aab83ce2bebd6a1f22b56",
+    "harness/results/v2/requirements.csv": "768551963b66f9f0a3aa31c8dccf444b98695d9e8c9a293e13f253a5333be5dc",
+    "harness/results/v2-external/gpt-oss-20b/blame_quality.csv": "92ecce2c6e331c6e9f281446368ea0667a1dbe4f075d71332664273e35b44259",
+    "harness/results/v2-external/gpt-oss-20b/blame_summary.csv": "c0fb34b7db3a871d127246e681b205e0cff5a558a5eaec40d6cbf01280c57542",
+    "harness/results/v2-external/gpt-oss-20b/certify_quality.csv": "ec7dbe8419a98888b8f02361234758f1cf04fdebe89fe6aa1c6b29c2cb3998ea",
+    "harness/results/v2-external/gpt-oss-20b/certify_summary.csv": "34621e5ef002238beb07932e5960cacf4b7d87278888a5d7b2c49cd3020c5bed",
+    "harness/results/v2-external/gpt-oss-20b/fix_quality.csv": "1dcaee78d75cba27291c10c2d8b7f50383110671092d4c318fdb4c8f6acd90a1",
+    "harness/results/v2-external/gpt-oss-20b/fix_summary.csv": "9068946bc2a3c65d963cdff7b4d450ace7dfd2332bee6a30ba7234b54affce92",
+    "harness/results/v2-external/gpt-oss-20b/flow_quality.csv": "5479232ab0fd2235de5477973f727c20e22b56f33af54517985c4ab7a5e5b4ed",
+    "harness/results/v2-external/gpt-oss-20b/flow_summary.csv": "57f8232c46330850719eeae801546cfe3f6acb70ea56041bc70a8180511037ee",
+    "harness/results/v2-external/gpt-oss-20b/justify_quality.csv": "776656d556a3cda7cdbc059bcb7c8162db216f472150e232cac0c8be40a836fd",
+    "harness/results/v2-external/gpt-oss-20b/justify_summary.csv": "bdca193b453eef83d86ed325c9789a320536a63017d9b8bf50aea07714d7eaed",
+    "harness/results/v2-external/gpt-oss-20b/prediction_mae.csv": "e216eddce7da7e30e5d4b0c607abd451f09dad51e98b1db6124c181b4cc056c8",
+    "harness/results/v2-external/gpt-oss-20b/prediction_summary.csv": "bfdf4537a3c13346996dbd2b9c6499ec6e5da58424e4827ca37ee7b8a7b222cd",
+    "harness/results/v2-external/gpt-oss-20b/race_prediction.csv": "d7b2786dfe2ba10d077f65627534aa6314f608749aa15e687801ba3b933b4945",
+    "harness/results/v2-external/gpt-oss-20b/race_selection.csv": "48487d69d56add1df70a6fd99aba8f5b56da4d4a272d9824fd6227f8bf08ca31",
+    "harness/results/v2-external/gpt-oss-20b/race_summary.csv": "97b8d2880665321a8aa278ebd11e4b12d2dc546e3291fd87a1bae7cc6d0cc9b9",
+    "harness/results/v2-external/gpt-oss-20b/remember_quality.csv": "18284e1d182931af5a3806099cd74fa8d0ede9b2202505a3f638f72b03665b03",
+    "harness/results/v2-external/gpt-oss-20b/remember_summary.csv": "7e6236aef249cb0e4bbaaa1daff39de850d956636caf0c361e4f743654b002ce",
+    "harness/results/v2-external/gpt-oss-20b/selection_quality.csv": "35479bc46e332515390b91ffe682fe249924012c89835ab9633f249db6a65dda",
+    "harness/results/v2-external/gpt-oss-20b/selection_summary.csv": "3ecb40ca54175f50950b4ed8150d1ef79bf83a3eaded5591c8f59596f90fcfb0",
+    "harness/results/v2-external/gpt-oss-20b/t7_prediction.csv": "5a571583769304a7996d28ab319cb9a4e5d45fafc1e3aaae328c324b9ef71034"
+  },
+  "outputs": {
+    "treatment_internal.csv": "5ea5b864c6327a4cfc09978a9013581874a63ce47c9269f6f62c2ba1050bc1af",
+    "treatment_external.csv": "07d5019e75a40efda38d11ff83efa7aeb7ec94ba0e9224721e17465110d956b3",
+    "reuse_pair_comparison.csv": "f3668e5c42bc28e31c67d52e8d1e8ec0573c766ddde89dfc9a89714cdcd854ce",
+    "t7_comparison.csv": "43e5a5ef742b15717b6b77b902b14b3269a11944523e6dde45ab58e09f0aa427",
+    "statistical_validity.md": "85df824c32943663860fdaa550416dc5ad742bf9504fbc6662422fff1f28f19e",
+    "consolidated_report.md": "d3f5d12c26c8b3432d1ffc97105c705b6aba7b19cc9d801b3a11d8b1076ca4f4"
+  },
+  "llm_calls": 0,
+  "programs_rerun": 0,
+  "t7_adapters_run": 0
+}
