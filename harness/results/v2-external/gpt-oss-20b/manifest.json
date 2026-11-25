@@ -1,0 +1,116 @@
+{
+  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline",
+  "status": "post-observation (added after the Task Talk; not pre-registered)",
+  "generated_utc": "2026-11-25T05:06:52+00:00",
+  "command": "python -m harness.external",
+  "model": "gpt-oss-20b",
+  "protocol": {
+    "requests": {
+      "cars": {
+        "request_id": "CAR-03",
+        "target": "Mpg+",
+        "direction": 1
+      },
+      "nasa": {
+        "request_id": "NASA-03",
+        "target": "Effort-",
+        "direction": -1
+      },
+      "apache": {
+        "request_id": "APACHE-03",
+        "target": "Performance-",
+        "direction": -1
+      }
+    },
+    "held_out": "rows whose 1-based number is divisible by 5 (harness.oracle.held_out)",
+    "baseline": "mean target of the non-held-out rows, scored on the held-out rows",
+    "metric": "mae_ratio = model_mae / baseline_mae; undefined (excluded) when baseline_mae == 0",
+    "beats_baseline": "model_mae < baseline_mae (strict, as in the frozen checker)",
+    "primary_inclusion": "program ran; ANSWER accepted by harness.answers.check_request; mask leakage rerun recorded as passed",
+    "leakage_unverified_policy": "excluded from primary (analysis choice, documented in the report)",
+    "shuffled_rerun": "recorded, not gating",
+    "llm_calls": 0,
+    "programs_rerun": 0
+  },
+  "inputs": {
+    "archive": {
+      "path": "harness/results/v2/gpt-oss-20b-3trials.zip",
+      "sha256": "d1a51a3fa3711829ede726dd08e1f77da070fc3e3064fdcd1971d24974eb7683",
+      "bytes": 14974907
+    },
+    "runs_csv": {
+      "path": "harness/results/v2/runs.csv",
+      "sha256": "77223c0305bfb5ed8c5105cfec11e07d9906ce922d0aab83ce2bebd6a1f22b56",
+      "bytes": 144575
+    },
+    "requirements_csv": {
+      "path": "harness/results/v2/requirements.csv",
+      "sha256": "768551963b66f9f0a3aa31c8dccf444b98695d9e8c9a293e13f253a5333be5dc",
+      "bytes": 185859
+    },
+    "archive_csv_copies_identical": {
+      "runs.csv": true,
+      "requirements.csv": true
+    },
+    "datasets": {
+      "cars": {
+        "path": "data/raw/auto93.csv",
+        "sha256": "187af5ccd93745dd2f2640af4ce6232e5f949c21885a48729e7ecff2592e1fce",
+        "bytes": 10612
+      },
+      "nasa": {
+        "path": "data/raw/nasa93dem.csv",
+        "sha256": "506b16fbe880e0f4b59f6b98214e64b4ea56a307519aea84077290684996201a",
+        "bytes": 7141
+      },
+      "apache": {
+        "path": "data/raw/Apache_AllMeasurements.csv",
+        "sha256": "aece683cc924d3564c4ff991521059f011f0dcb5fd27f85ce707f02b2aadc34e",
+        "bytes": 4495
+      }
+    },
+    "code": {
+      "external": {
+        "path": "harness/external.py",
+        "sha256": "394c3908a2e6c994dbeedcd4b9dd4dd793d2fec6d72f470d520c333d15b7aaf6",
+        "bytes": 30337
+      },
+      "answers": {
+        "path": "harness/answers.py",
+        "sha256": "ea0bbc80d78d1a688643a279cce3f7756383cd02c5fc52fe2ecc1624db78bb11",
+        "bytes": 58873
+      },
+      "oracle": {
+        "path": "harness/oracle.py",
+        "sha256": "f4d10060e13519d7a2c2c021ba4887b361edbb72e6b779a8e35bf2f67d9dc2b3",
+        "bytes": 12855
+      },
+      "semantic": {
+        "path": "harness/semantic.py",
+        "sha256": "cc27d86f3106126adb1253912fb6461fd54d5caf4ca41e6efc5f4e8d09e10ec6",
+        "bytes": 9183
+      }
+    }
+  },
+  "git": {
+    "commit": "c257bcdf2d6096892db8483d96406a5154b0e045",
+    "branch": "analysis/external-metrics",
+    "dirty": true
+  },
+  "environment": {
+    "python": "3.14.7",
+    "implementation": "CPython",
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O"
+  },
+  "outputs": {
+    "prediction_mae.csv": {
+      "sha256": "e216eddce7da7e30e5d4b0c607abd451f09dad51e98b1db6124c181b4cc056c8"
+    },
+    "prediction_summary.csv": {
+      "sha256": "bfdf4537a3c13346996dbd2b9c6499ec6e5da58424e4827ca37ee7b8a7b222cd"
+    },
+    "prediction_report.md": {
+      "sha256": "894a1752c9193a8aaf4a88a6b52132fb00dc7e55179c3b7229726d5d12d25e67"
+    }
+  }
+}
