@@ -1,7 +1,7 @@
 {
-  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; phase 3: Race (guided vs random selection, model vs historical-mean prediction); phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters; phase 4C: Cars T7 prediction adapters; phase 5C: Fix observed alternatives (Cars, Apache); phase 5D: Justify truthfulness; phase 5E: Remember shortlist quality",
+  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; phase 3: Race (guided vs random selection, model vs historical-mean prediction); phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters; phase 4C: Cars T7 prediction adapters; phase 5C: Fix observed alternatives (Cars, Apache); phase 5D: Justify truthfulness; phase 5E: Remember shortlist quality; phase 5F: Certify agreement with the frozen statistical oracle",
   "status": "post-observation (added after the Task Talk; not pre-registered)",
-  "generated_utc": "2026-11-25T07:33:11+00:00",
+  "generated_utc": "2026-11-25T15:03:12+00:00",
   "command": "python -m harness.external",
   "model": "gpt-oss-20b",
   "protocol": {
@@ -258,6 +258,35 @@
       "APACHE-02": "truth = best quartile of observed Performance- (harness.oracle.best_fraction, ties included; the 25% cut is the frozen checker's). precision = hits/k, recall = hits/|quartile|, percentile = share of rows with strictly lower Performance-. settings_accuracy = share of listed settings whose top_share and rest_share are within 0.011 of the truth (frozen tolerance). success (frozen rules) = at least 80% of the listed rows in the best quartile, every listed share correct, and the first setting among the two most distinguishing",
       "top_10": "precision_at_10 uses the first 10 listed rows and is reported only when k >= 10",
       "meaning": "Pareto non-domination and best-quartile performance follow from the declared goals and recorded values; they are not verified customer preferences, prices or satisfaction"
+    },
+    "certify": {
+      "status": "post-hoc (added after the Task Talk); the reference decision is the frozen oracle's own rule",
+      "requests": {
+        "cars": [
+          "CAR-05",
+          "CAR-06"
+        ],
+        "nasa": [
+          "NASA-05",
+          "NASA-06"
+        ],
+        "apache": [
+          "APACHE-05",
+          "APACHE-06"
+        ]
+      },
+      "what_it_measures": "agreement of each program's 'different'/'same' verdicts with harness.oracle.clear_verdict on the same groups; this is oracle consistency, not real-world effect detection and not an A/A false-alarm rate (no repeated same-treatment measurements exist in the archive)",
+      "reference": "harness.oracle.clear_verdict(xs, ys): 'different' when |Cliff's delta| >= 0.474 and the two-sample KS test rejects at 95% (critical 1.36*sqrt((n+m)/(nm))); 'same' when |delta| < 0.147 and KS does not reject; otherwise undecidable (either verdict accepted). Groups under 5 rows are never decidable. Thresholds are the frozen oracle's; none are added",
+      "groups (CAR-05, NASA-05/06, APACHE-05/06)": "groups = every distinct value of the group column, members = rows with a recorded outcome (as the frozen checker forms them); one reference per unordered pair; when a pair is listed twice the last listing counts (as in the checker)",
+      "year_groups (CAR-06)": "groups = the program's own two Model ranges (rows with from <= Model <= to). One reference per overall score (d2h, zsum, ranksum; lower = better). The comparison is decidable only when all three are decidable and agree; if any is undecidable, or they conflict, the frozen checker accepts either verdict and the comparison is counted as undecidable",
+      "outcomes": "agree; false_positive = said 'different' where the oracle says 'same'; false_negative = said 'same' where the oracle says 'different'; undecidable_said_same / undecidable_said_different = verdicts on pairs the oracle cannot decide (both accepted; 'same' there is the schema's 'not reliably different')",
+      "abstention": "the frozen schema allows only 'different' or 'same'; any other label (for example 'inconclusive') is a schema error, recorded as schema_error_type = verdict_label with the label in abstention_label; a skipped pair is schema_error_type = missing_comparison",
+      "agreement_rate": "agree / n_decidable within one answer; blank when the answer has no decidable comparison. Comparisons inside one program are not independent trials; cells report the median over trials and pooled counts only as descriptive totals",
+      "oracle_consistent": "schema-valid and no false positive or false negative (vacuously true when nothing is decidable; n_decidable shows when)",
+      "success": "oracle_consistent; delivery_rate = successes / all attempts",
+      "direction": "for oracle-'different' pairs of the groups kind: does the order of the reported group means favour the same group as the oracle (sign of Cliff's delta under the outcome's goal direction)? The schema has no effect-size field, so effect-size error is not measurable; group n/median/mean accuracy is reported instead (median within the checker's tolerance of any median, mean within O.close)",
+      "frozen_base_pass": "every base check of harness.answers.check_request passes (group statistics and verdicts)",
+      "integrity_valid": "ran and ANSWER accepted by the frozen format check; the answers cite computed group statistics, not row values, so there are no fabricated cells to gate on; archived shuffled-rerun verdict failures are recorded, not gating"
     }
   },
   "inputs": {
@@ -300,8 +329,8 @@
     "code": {
       "external": {
         "path": "harness/external.py",
-        "sha256": "deed26f60efb8d2d97e3fd8e2bd519c9aac201e7f9858b980fff96958c84deeb",
-        "bytes": 173275
+        "sha256": "9e434c632cc0132c84610604d71b8b70f9723e0a6f582f23a5ed14f04c618342",
+        "bytes": 203111
       },
       "answers": {
         "path": "harness/answers.py",
@@ -443,7 +472,7 @@
     }
   },
   "git": {
-    "commit": "884ae8ad6bbc7d33bcfc853d620b58e9b6f6ccdd",
+    "commit": "6f580c8eaaf527c4292a03985ec17032268dc418",
     "branch": "analysis/external-metrics",
     "dirty": true
   },
@@ -460,7 +489,7 @@
       "sha256": "bfdf4537a3c13346996dbd2b9c6499ec6e5da58424e4827ca37ee7b8a7b222cd"
     },
     "prediction_report.md": {
-      "sha256": "f77cc37c04e42039cef51e5e6a849a0c6adbaef43ea284943aef8bbcfbe8fd92"
+      "sha256": "f17112329f87b9c29cf3c5d5bffa1e6aaaf7ec4f13f462c10a599505036ff19e"
     },
     "selection_quality.csv": {
       "sha256": "35479bc46e332515390b91ffe682fe249924012c89835ab9633f249db6a65dda"
@@ -469,7 +498,7 @@
       "sha256": "3ecb40ca54175f50950b4ed8150d1ef79bf83a3eaded5591c8f59596f90fcfb0"
     },
     "selection_report.md": {
-      "sha256": "2539f1b62af6aad8bc8f1b8b43cdd1b235e881b3995f36e02ade714ccb9d2d84"
+      "sha256": "f457b44b94116294569bca30a12f350fd52806f71a6a9b34f14f445ec642800d"
     },
     "race_selection.csv": {
       "sha256": "48487d69d56add1df70a6fd99aba8f5b56da4d4a272d9824fd6227f8bf08ca31"
@@ -481,13 +510,13 @@
       "sha256": "97b8d2880665321a8aa278ebd11e4b12d2dc546e3291fd87a1bae7cc6d0cc9b9"
     },
     "race_report.md": {
-      "sha256": "b2e5fa61f4e17e5a8625540401fac20cc668ae5f44d4c5a96d37203d53313448"
+      "sha256": "e1599bc814f911af892016cec57ae791e7ceab233fda4da7a0ec256f76033352"
     },
     "t7_prediction.csv": {
       "sha256": "5a571583769304a7996d28ab319cb9a4e5d45fafc1e3aaae328c324b9ef71034"
     },
     "t7_prediction_report.md": {
-      "sha256": "e3ce3afc33ff38cdd280ca63500fe536b65a2ea85095cd72bfc901ad6162094a"
+      "sha256": "b8529c62671d9d772fa6fe46c7a4601dcf72f5ebe21108e7f3c61f69be9fe63a"
     },
     "fix_quality.csv": {
       "sha256": "1dcaee78d75cba27291c10c2d8b7f50383110671092d4c318fdb4c8f6acd90a1"
@@ -496,7 +525,7 @@
       "sha256": "9068946bc2a3c65d963cdff7b4d450ace7dfd2332bee6a30ba7234b54affce92"
     },
     "fix_report.md": {
-      "sha256": "32fcc0db629235e73a904e849c770220b0e70cdb42b5386a7b5d25ec775bbcd3"
+      "sha256": "809d70c7b25128a29474078a9225dfd62fd1b0937e91a96d0de1baaad5e61f7c"
     },
     "justify_quality.csv": {
       "sha256": "776656d556a3cda7cdbc059bcb7c8162db216f472150e232cac0c8be40a836fd"
@@ -505,7 +534,7 @@
       "sha256": "bdca193b453eef83d86ed325c9789a320536a63017d9b8bf50aea07714d7eaed"
     },
     "justify_report.md": {
-      "sha256": "99e9cd6dc648e96fe1c828fd55b09950b888f825319db95ccf0dedabbc9d1e71"
+      "sha256": "04ebfcdd60da85afdb301d8a34c8e88516d7664a7b9237d3479920e13c01520a"
     },
     "remember_quality.csv": {
       "sha256": "18284e1d182931af5a3806099cd74fa8d0ede9b2202505a3f638f72b03665b03"
@@ -514,7 +543,16 @@
       "sha256": "7e6236aef249cb0e4bbaaa1daff39de850d956636caf0c361e4f743654b002ce"
     },
     "remember_report.md": {
-      "sha256": "ee0129812be16bff0b3e03f2f68cc2c6ec8297ce99dcee87830f499059c7e16c"
+      "sha256": "17325d3d02a4567434fcfae9ed6efd49914ba88eea7cc35490d16da1f6bd7a12"
+    },
+    "certify_quality.csv": {
+      "sha256": "ec7dbe8419a98888b8f02361234758f1cf04fdebe89fe6aa1c6b29c2cb3998ea"
+    },
+    "certify_summary.csv": {
+      "sha256": "34621e5ef002238beb07932e5960cacf4b7d87278888a5d7b2c49cd3020c5bed"
+    },
+    "certify_report.md": {
+      "sha256": "e704196efea2d3b9ba0649bd14a81d101c76ff2cb8fc2bf23716fbc25dcf7c8c"
     }
   }
 }

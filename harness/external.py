@@ -1907,6 +1907,463 @@ def remember_report(rows, summary, manifest):
 
 
 
+# ---- phase 5F: Certify (skill 3), agreement with the frozen statistical oracle -------
+
+CERTIFY_STEP = 3
+CERTIFY = {
+    "cars": ("CAR-05", "CAR-06"),
+    "nasa": ("NASA-05", "NASA-06"),
+    "apache": ("APACHE-05", "APACHE-06"),
+}
+AGGREGATE_NAMES = ("d2h", "zsum", "ranksum")   # the order of harness.oracle.aggregates
+DECISION_OUTCOMES = ("agree", "false_positive", "false_negative", "undecidable_said_same",
+                     "undecidable_said_different")
+
+CERTIFY_FIELDS = [
+    "model", "domain", "treatment", "trial", "skill_index", "request_id", "kind", "group_column", "outcome",
+    "step_status", "step_runs", "step_semantic", "request_status",
+    "check_runs", "check_timed_out", "answer_state", "answer_detail", "schema_error_type", "abstention_label",
+    "shuffled_gate", "archived_base_verdict_failures", "archived_shuffled_verdict_failures", "integrity_valid",
+    # group formation and the reported group statistics
+    "n_groups_expected", "n_groups_reported", "groups_n_correct", "groups_median_correct", "groups_mean_correct",
+    "group_mean_abs_error", "ranges", "ranges_valid", "range_n", "range_n_correct", "range_coverage",
+    # decisions
+    "n_pairs", "comparisons_listed", "said_different", "said_same", "n_decidable", "agree", "false_positive",
+    "false_negative", "undecidable", "undecidable_said_same", "undecidable_said_different", "agreement_rate",
+    "direction_checked", "direction_agree", "oracle_consistent", "frozen_base_pass", "frozen_verdict_failures",
+    "pair_detail", "success", "primary", "exclusion_reason", "notes",
+    "check_entry", "check_crc32", "check_sha256", "semantic_entry", "semantic_sha256",
+]
+
+CERTIFY_PROTOCOL = {
+    "status": "post-hoc (added after the Task Talk); the reference decision is the frozen oracle's own rule",
+    "requests": {d: list(v) for d, v in CERTIFY.items()},
+    "what_it_measures": "agreement of each program's 'different'/'same' verdicts with harness.oracle.clear_verdict on "
+                        "the same groups; this is oracle consistency, not real-world effect detection and not an A/A "
+                        "false-alarm rate (no repeated same-treatment measurements exist in the archive)",
+    "reference": "harness.oracle.clear_verdict(xs, ys): 'different' when |Cliff's delta| >= 0.474 and the two-sample KS "
+                 "test rejects at 95% (critical 1.36*sqrt((n+m)/(nm))); 'same' when |delta| < 0.147 and KS does not "
+                 "reject; otherwise undecidable (either verdict accepted). Groups under 5 rows are never decidable. "
+                 "Thresholds are the frozen oracle's; none are added",
+    "groups (CAR-05, NASA-05/06, APACHE-05/06)": "groups = every distinct value of the group column, members = rows with "
+                                                "a recorded outcome (as the frozen checker forms them); one reference "
+                                                "per unordered pair; when a pair is listed twice the last listing counts "
+                                                "(as in the checker)",
+    "year_groups (CAR-06)": "groups = the program's own two Model ranges (rows with from <= Model <= to). One reference "
+                            "per overall score (d2h, zsum, ranksum; lower = better). The comparison is decidable only "
+                            "when all three are decidable and agree; if any is undecidable, or they conflict, the frozen "
+                            "checker accepts either verdict and the comparison is counted as undecidable",
+    "outcomes": "agree; false_positive = said 'different' where the oracle says 'same'; false_negative = said 'same' "
+                "where the oracle says 'different'; undecidable_said_same / undecidable_said_different = verdicts on "
+                "pairs the oracle cannot decide (both accepted; 'same' there is the schema's 'not reliably different')",
+    "abstention": "the frozen schema allows only 'different' or 'same'; any other label (for example 'inconclusive') "
+                  "is a schema error, recorded as schema_error_type = verdict_label with the label in "
+                  "abstention_label; a skipped pair is schema_error_type = missing_comparison",
+    "agreement_rate": "agree / n_decidable within one answer; blank when the answer has no decidable comparison. "
+                      "Comparisons inside one program are not independent trials; cells report the median over trials "
+                      "and pooled counts only as descriptive totals",
+    "oracle_consistent": "schema-valid and no false positive or false negative (vacuously true when nothing is "
+                         "decidable; n_decidable shows when)",
+    "success": "oracle_consistent; delivery_rate = successes / all attempts",
+    "direction": "for oracle-'different' pairs of the groups kind: does the order of the reported group means favour "
+                 "the same group as the oracle (sign of Cliff's delta under the outcome's goal direction)? The schema "
+                 "has no effect-size field, so effect-size error is not measurable; group n/median/mean accuracy is "
+                 "reported instead (median within the checker's tolerance of any median, mean within O.close)",
+    "frozen_base_pass": "every base check of harness.answers.check_request passes (group statistics and verdicts)",
+    "integrity_valid": "ran and ANSWER accepted by the frozen format check; the answers cite computed group statistics, "
+                       "not row values, so there are no fabricated cells to gate on; archived shuffled-rerun verdict "
+                       "failures are recorded, not gating",
+}
+
+
+def certify_reference(xs, ys):
+    """The frozen oracle's decision on two outcome samples, with the statistics it is based on."""
+    ref = O.clear_verdict(xs, ys)
+    out = {"n_a": len(xs), "n_b": len(ys), "reference": ref, "cliffs_delta": "", "ks_rejects": ""}
+    if xs and ys:
+        out["cliffs_delta"] = O.cliffs_delta(xs, ys)
+        out["ks_rejects"] = O.ks_rejects(xs, ys)
+    if len(xs) < 5 or len(ys) < 5:
+        out["reason"] = "group under 5 rows"
+    elif ref == "different":
+        out["reason"] = "large effect and KS rejects"
+    elif ref == "same":
+        out["reason"] = "negligible effect and KS does not reject"
+    else:
+        out["reason"] = "intermediate evidence"
+    return out
+
+
+def decision_outcome(said, reference):
+    if reference is None:
+        return f"undecidable_said_{said}"
+    if said == reference:
+        return "agree"
+    return "false_positive" if said == "different" else "false_negative"
+
+
+def certify_groups(data, group, outcome):
+    """The groups the frozen checker forms: {value: [outcome values]} over rows with a recorded outcome."""
+    values = sorted(set(data.values(group)), key=str)
+    return values, {v: [data.value(r, outcome) for r in range(1, data.n + 1)
+                        if data.value(r, group) == v and data.value(r, outcome) is not None] for v in values}
+
+
+def _count_outcomes(m, outcomes):
+    for o in DECISION_OUTCOMES:
+        m[o] = outcomes.count(o)
+    m["n_decidable"] = m["agree"] + m["false_positive"] + m["false_negative"]
+    m["undecidable"] = m["undecidable_said_same"] + m["undecidable_said_different"]
+    m["agreement_rate"] = m["agree"] / m["n_decidable"] if m["n_decidable"] else ""
+    m["oracle_consistent"] = m["false_positive"] == 0 and m["false_negative"] == 0
+
+
+def _label(v):
+    return f"{v:g}" if isinstance(v, float) else str(v)
+
+
+def certify_metrics(data, kind, ans, params):
+    """Independent decision metrics for one schema-valid Certify answer."""
+    if kind == "groups":
+        g, o = params["group"], params["outcome"]
+        w = dict(data.goals())[o]
+        values, members = certify_groups(data, g, o)
+        groups = ans["groups"]
+        found = {v: groups[next(k for k in groups if A.key_matches(data, g, k, v))] for v in values}
+        n_ok = med_ok = mean_ok = 0
+        errs = []
+        for v, e in found.items():
+            ys = members[v]
+            n_ok += A.num(e["n"]) == len(ys)
+            med_ok += any(O.close(A.num(e["median"]), m) for m in O.medians(ys)) if ys else False
+            if ys:
+                mean_ok += O.close(A.num(e["mean"]), O.mean(ys))
+                errs.append(abs(A.num(e["mean"]) - O.mean(ys)))
+        seen = {}
+        for e in ans["comparisons"]:
+            a = next(v for v in values if A.key_matches(data, g, e["a"], v))
+            b = next(v for v in values if A.key_matches(data, g, e["b"], v))
+            seen[frozenset((a, b))] = e["verdict"]
+        outcomes, detail = [], []
+        dir_checked = dir_ok = 0
+        for i, a in enumerate(values):
+            for b in values[i + 1:]:
+                ref = certify_reference(members[a], members[b])
+                said = seen[frozenset((a, b))]
+                out = decision_outcome(said, ref["reference"])
+                outcomes.append(out)
+                if ref["reference"] == "different":
+                    dir_checked += 1
+                    oracle_a_better = w * ref["cliffs_delta"] > 0
+                    reported = w * (A.num(found[a]["mean"]) - A.num(found[b]["mean"]))
+                    dir_ok += reported != 0 and (reported > 0) == oracle_a_better
+                delta = "" if ref["cliffs_delta"] == "" else f"{ref['cliffs_delta']:+.3f}"
+                detail.append(f"{_label(a)}v{_label(b)} n={ref['n_a']}/{ref['n_b']} delta={delta} "
+                              f"ks={ref['ks_rejects']} oracle={ref['reference'] or 'undecidable'} said={said} -> {out}")
+        m = {"group_column": g, "outcome": o, "n_groups_expected": len(values), "n_groups_reported": len(groups),
+             "groups_n_correct": n_ok, "groups_median_correct": med_ok, "groups_mean_correct": mean_ok,
+             "group_mean_abs_error": O.mean(errs) if errs else "",
+             "n_pairs": len(outcomes), "comparisons_listed": len(ans["comparisons"]),
+             "said_different": sum(seen[frozenset((a, b))] == "different" for i, a in enumerate(values)
+                                   for b in values[i + 1:]),
+             "direction_checked": dir_checked, "direction_agree": dir_ok if dir_checked else "",
+             "pair_detail": "; ".join(detail)}
+        m["said_same"] = m["n_pairs"] - m["said_different"]
+        _count_outcomes(m, outcomes)
+        return m
+    if kind == "year_groups":
+        g = params["group"]
+        spans = [(A.num(e["from"]), A.num(e["to"])) for e in ans["groups"]]
+        (a0, a1), (b0, b1) = sorted(spans)
+        groups = [[r for r in range(1, data.n + 1) if lo <= data.value(r, g) <= hi] for lo, hi in spans]
+        refs = [certify_reference([s[r] for r in groups[0]], [s[r] for r in groups[1]]) for s in O.aggregates(data)]
+        truths = [x["reference"] for x in refs]
+        if None in truths:
+            ref, why = None, "an overall score is undecidable"
+        elif len(set(truths)) > 1:
+            ref, why = None, "the overall scores conflict"
+        else:
+            ref, why = truths[0], "all three overall scores agree"
+        said = ans["verdict"]
+        out = decision_outcome(said, ref)
+        detail = [f"{nm}: n={x['n_a']}/{x['n_b']} delta="
+                  f"{'' if x['cliffs_delta'] == '' else format(x['cliffs_delta'], '+.3f')} ks={x['ks_rejects']} "
+                  f"oracle={x['reference'] or 'undecidable'}" for nm, x in zip(AGGREGATE_NAMES, refs)]
+        detail.append(f"combined={ref or 'undecidable'} ({why}) said={said} -> {out}")
+        covered = set(groups[0]) | set(groups[1])
+        m = {"group_column": g, "outcome": "overall (d2h, zsum, ranksum)", "n_groups_expected": 2,
+             "n_groups_reported": len(ans["groups"]),
+             "ranges": ";".join(f"{lo:g}-{hi:g}" for lo, hi in spans), "ranges_valid": a0 <= a1 < b0 <= b1,
+             "range_n": ";".join(str(len(x)) for x in groups),
+             "range_n_correct": sum(A.num(e["n"]) == len(x) for e, x in zip(ans["groups"], groups)),
+             "range_coverage": len(covered) / data.n,
+             "n_pairs": 1, "comparisons_listed": 1, "said_different": int(said == "different"),
+             "said_same": int(said == "same"), "direction_checked": 0, "pair_detail": "; ".join(detail)}
+        _count_outcomes(m, [out])
+        return m
+    raise ValueError(f"not a Certify kind: {kind}")
+
+
+def _schema_error_type(detail):
+    if detail.startswith("verdict must be"):
+        return "verdict_label"
+    if detail.startswith("missing comparison"):
+        return "missing_comparison"
+    if detail.startswith("no group for") or " groups, expected " in detail or "need exactly 2 groups" in detail:
+        return "group_formation"
+    return "other"
+
+
+def _archived_verdict_failures(sem, rid, run):
+    req = next((r for r in sem.get("requests", []) if r.get("request_id") == rid), None)
+    if req is None:
+        return ""
+    return sum(f.startswith(f"{run}:") and f.split(": ", 1)[0].endswith("verdict") for f in req.get("failed", []))
+
+
+def _certify_row(z, names, root, model, domain, t, k, rid, data, runs, reqs):
+    kind, params = A.REQUESTS[rid]
+    row, ctx, ans, sem = _attempt(z, names, root, model, domain, t, k, CERTIFY_STEP, rid, data, runs, reqs,
+                                  CERTIFY_FIELDS, dict(kind=kind, group_column=params["group"],
+                                                       outcome=params.get("outcome", "overall"),
+                                                       shuffled_gate="not_run", integrity_valid=False, success=False))
+    if sem:
+        row["archived_base_verdict_failures"] = _archived_verdict_failures(sem, rid, "base")
+        row["archived_shuffled_verdict_failures"] = _archived_verdict_failures(sem, rid, "shuffled")
+    if row["exclusion_reason"] == "answer_schema_error":
+        row["schema_error_type"] = _schema_error_type(row["answer_detail"])
+        if row["schema_error_type"] == "verdict_label":
+            hit = re.search(r"got (.+)$", row["answer_detail"])
+            row["abstention_label"] = hit.group(1) if hit else ""
+    if ctx is None:
+        return row
+    row["shuffled_gate"] = shuffled_gate(sem, rid)
+    row.update(certify_metrics(data, kind, ans, params))
+    row["frozen_base_pass"] = all(ok for _, ok, _ in ctx.items)
+    row["frozen_verdict_failures"] = sum(not ok and name.endswith("verdict") for name, ok, _ in ctx.items)
+    row.update(integrity_valid=True, primary=True, success=row["oracle_consistent"])
+    return row
+
+
+def extract_certify(archive=ARCHIVE, runs_csv=RUNS_CSV, requirements_csv=REQUIREMENTS_CSV, data_dir=DATA_DIR,
+                    model=MODEL, domains=DOMAINS):
+    runs = _index(runs_csv, ("model", "domain", "treatment", "trial", "skill_index"))
+    reqs = _index(requirements_csv, ("model", "domain", "treatment", "trial", "request_id"))
+    rows = []
+    with zipfile.ZipFile(archive) as z:
+        names = set(z.namelist())
+        root = archive_root(names, model)
+        for domain in domains:
+            if set(CERTIFY[domain]) != set(request_ids(domain, CERTIFY_STEP)):
+                raise ValueError(f"{CERTIFY[domain]} are not the frozen Certify requests of {domain}")
+            data = O.load(Path(data_dir) / DATASETS[domain])
+            for rid in CERTIFY[domain]:
+                for t in TREATMENTS:
+                    for k in TRIALS:
+                        rows.append(_certify_row(z, names, root, model, domain, t, k, rid, data, runs, reqs))
+    keys = [(r["domain"], r["treatment"], r["trial"], r["request_id"]) for r in rows]
+    if len(keys) != len(set(keys)):
+        raise ValueError("duplicate trial records")
+    return rows
+
+
+def certify_reference_table(data_dir=DATA_DIR, domains=DOMAINS):
+    """The oracle's fixed reference decisions for the groups-kind requests (CAR-06 depends on each answer)."""
+    out = []
+    for d in domains:
+        data = O.load(Path(data_dir) / DATASETS[d])
+        for rid in CERTIFY[d]:
+            kind, params = A.REQUESTS[rid]
+            if kind != "groups":
+                continue
+            values, members = certify_groups(data, params["group"], params["outcome"])
+            for i, a in enumerate(values):
+                for b in values[i + 1:]:
+                    out.append(dict(certify_reference(members[a], members[b]), domain=d, request_id=rid,
+                                    a=_label(a), b=_label(b)))
+    return out
+
+
+CERTIFY_SUMMARY_FIELDS = [
+    "scope", "domain", "treatment", "request_id", "kind",
+    "attempted", "executable", "schema_valid", "integrity_valid", "oracle_consistent",
+    "generation_failed", "execution_failed", "answer_missing", "answer_invalid_json", "answer_schema_error",
+    "abstention_labels", "missing_comparisons", "shuffled_failed_among_valid", "shuffled_verdict_failures_among_valid",
+    "delivery_rate", "conditional_consistency_rate",
+    "decidable_per_answer", "answers_with_decidable", "median_agreement_rate", "pooled_agree", "pooled_decidable",
+    "false_positive", "false_negative", "undecidable_said_same", "undecidable_said_different",
+    "direction_checked", "direction_agree", "groups_stats_exact", "frozen_base_pass",
+]
+
+
+def _certify_cell(scope, domain, treatment, rid, sel):
+    prim = [r for r in sel if r["primary"]]
+    cons = sum(bool(r["success"]) for r in prim)
+    reasons = [r["exclusion_reason"] for r in sel]
+    dec = sorted({r["n_decidable"] for r in prim})
+    stats_exact = sum(r["groups_n_correct"] == r["groups_median_correct"] == r["groups_mean_correct"]
+                      == r["n_groups_expected"] if r["kind"] == "groups"
+                      else r["range_n_correct"] == 2 and r["ranges_valid"] is True for r in prim)
+    return {
+        "scope": scope, "domain": domain, "treatment": treatment, "request_id": rid, "kind": A.REQUESTS[rid][0],
+        "attempted": len(sel), "executable": sum(r["check_runs"] is True for r in sel),
+        "schema_valid": sum(r["answer_state"] == "valid" for r in sel), "integrity_valid": len(prim),
+        "oracle_consistent": cons,
+        "generation_failed": reasons.count("generation_failed") + reasons.count("not_attempted"),
+        "execution_failed": reasons.count("execution_failure") + reasons.count("execution_timeout"),
+        "answer_missing": reasons.count("answer_missing"), "answer_invalid_json": reasons.count("answer_invalid_json"),
+        "answer_schema_error": reasons.count("answer_schema_error"),
+        "abstention_labels": sum(r["schema_error_type"] == "verdict_label" for r in sel),
+        "missing_comparisons": sum(r["schema_error_type"] == "missing_comparison" for r in sel),
+        "shuffled_failed_among_valid": sum(r["shuffled_gate"] == "fail" for r in prim),
+        "shuffled_verdict_failures_among_valid": sum(r["archived_shuffled_verdict_failures"] or 0 for r in prim),
+        "delivery_rate": _rate(cons, len(sel)), "conditional_consistency_rate": _rate(cons, len(prim)),
+        "decidable_per_answer": "/".join(str(x) for x in dec),
+        "answers_with_decidable": sum(r["n_decidable"] > 0 for r in prim),
+        "median_agreement_rate": _med([r["agreement_rate"] for r in prim]),
+        "pooled_agree": sum(r["agree"] for r in prim), "pooled_decidable": sum(r["n_decidable"] for r in prim),
+        "false_positive": sum(r["false_positive"] for r in prim), "false_negative": sum(r["false_negative"] for r in prim),
+        "undecidable_said_same": sum(r["undecidable_said_same"] for r in prim),
+        "undecidable_said_different": sum(r["undecidable_said_different"] for r in prim),
+        "direction_checked": sum(r["direction_checked"] or 0 for r in prim),
+        "direction_agree": sum(r["direction_agree"] or 0 for r in prim if r["direction_checked"]),
+        "groups_stats_exact": stats_exact, "frozen_base_pass": sum(r["frozen_base_pass"] is True for r in prim),
+    }
+
+
+def summarize_certify(rows):
+    out = []
+    for d in DOMAINS:
+        for rid in CERTIFY[d]:
+            for t in TREATMENTS:
+                sel = [r for r in rows if r["domain"] == d and r["treatment"] == t and r["request_id"] == rid]
+                if sel:
+                    out.append(_certify_cell("domain_treatment", d, t, rid, sel))
+            sel = [r for r in rows if r["domain"] == d and r["request_id"] == rid]
+            if sel:
+                out.append(_certify_cell("domain", d, "all", rid, sel))
+    return out
+
+
+T7_CERTIFY_NOTES = [
+    "NASA: `t7_validation/adapters/nasa/certify.py` keeps the original T7 grouping and permutation test, and adds a "
+    "separate Cliff's delta + KS verdict as an adapter policy that the original T7 demo did not have.",
+    "Apache: `t7_validation/adapters/apache/certify.py` says 'different' when the original T7 permutation p < 0.05 "
+    "and |Cliff's delta| >= 0.474: a different rule from the oracle's (no KS step, no 'same' band).",
+    "Cars: no Certify adapter; `human_t7/cars/certify.py` compares each cylinder count only against 4 cylinders (not "
+    "every pair) with the shared library's compare() (its own Cohen 0.35, KS 1.36 and Cliff's 0.195 thresholds) and "
+    "does not print the common ANSWER format.",
+]
+
+
+def certify_report(rows, summary, manifest, refs):
+    cells = [s for s in summary if s["scope"] == "domain_treatment"]
+    lines = [
+        "# External metric, phase 5F: Certify — do the programs' group-difference verdicts agree with the oracle?",
+        "",
+        "**Status: post-observation analysis.** Added after the Task Talk; not part of the pre-registered plan in "
+        "`docs/hypotheses.md`. The decision rule is the frozen oracle's own (`harness.oracle.clear_verdict`); no "
+        "threshold is added.",
+        "",
+        "**What this measures: oracle consistency, not effect detection.** A verdict is scored against the oracle's "
+        "decision on the same data. That is not ground truth about real differences between vehicles, projects or "
+        "server settings, and it is **not an A/A false-alarm rate**: the archive has no repeated same-treatment "
+        "measurements and no simulation protocol for one.",
+        "",
+        "**The oracle's rule.** 'different' when |Cliff's delta| >= 0.474 *and* a two-sample KS test rejects at 95%; "
+        "'same' when |delta| < 0.147 *and* KS does not reject; otherwise undecidable, and the frozen checker accepts "
+        "either verdict. Groups under 5 rows are never decidable. CAR-06 compares the program's own two model-year "
+        "ranges on three overall scores (d2h, zsum, ranksum); it is decidable only when all three are decidable and "
+        "agree.",
+        "",
+        "**Outcomes.** *False positive* = said 'different' where the oracle says 'same'. *False negative* = said 'same' "
+        "where the oracle says 'different'. On undecidable pairs either answer is accepted; 'same' there is the "
+        "schema's 'not reliably different', the closest thing to an honest 'no clear difference'. The schema allows "
+        "only 'different' or 'same', so an abstention label (such as 'inconclusive') is a schema error, counted "
+        "separately.",
+        "",
+        "**Counting.** Comparisons inside one program are not independent trials. Each attempt gets one agreement rate "
+        "(agree / decidable); cells report the median over attempts. Pooled counts are descriptive totals only. "
+        "*Delivery* = oracle-consistent answers (no false positive or negative) over all attempts.",
+        "",
+        "## Reference decisions (fixed by the data)",
+        "",
+        "| request | pair | n | Cliff's delta | KS rejects | oracle | why |",
+        "|---|---|---:|---:|---|---|---|",
+    ]
+    for x in refs:
+        lines.append(f"| {x['request_id']} | {x['a']} vs {x['b']} | {x['n_a']}/{x['n_b']} | "
+                     f"{_num(x['cliffs_delta'], '+.3f')} | {x['ks_rejects']} | {x['reference'] or 'undecidable'} | "
+                     f"{x['reason']} |")
+    dec = {}
+    for x in refs:
+        dec.setdefault(x["request_id"], [0, 0])
+        dec[x["request_id"]][0] += 1
+        dec[x["request_id"]][1] += x["reference"] is not None
+    lines += ["", "Decidable pairs: " + ", ".join(f"{r} {b} of {a}" for r, (a, b) in dec.items()) +
+              ". APACHE-06 has none, so every valid APACHE-06 answer is consistent by default. CAR-06 depends on "
+              "the ranges each program chose (see below).", ""]
+    for d in DOMAINS:
+        for rid in CERTIFY[d]:
+            kind = A.REQUESTS[rid][0]
+            lines += [f"## {rid} (`{kind}`)", "",
+                      "| T | attempted | executable | valid | decidable per answer | median agreement | FP | FN | "
+                      "undecidable: said same / different | direction agree | stats exact | consistent | delivery |",
+                      "|---|---:|---:|---:|---|---:|---:|---:|---|---|---:|---:|---:|"]
+            for s in [x for x in cells if x["request_id"] == rid]:
+                da = f"{s['direction_agree']}/{s['direction_checked']}" if s["direction_checked"] else "—"
+                lines.append(f"| {s['treatment']} | {s['attempted']} | {s['executable']} | {s['integrity_valid']} | "
+                             f"{s['decidable_per_answer'] or '—'} | {_num(s['median_agreement_rate'], '.2f')} | "
+                             f"{s['false_positive']} | {s['false_negative']} | {s['undecidable_said_same']} / "
+                             f"{s['undecidable_said_different']} | {da} | {s['groups_stats_exact']} | "
+                             f"{s['oracle_consistent']} | {_pct(s['delivery_rate'])} |")
+            if kind == "year_groups":
+                lines += ["", "Ranges the valid answers chose (identical choices grouped):", ""]
+                chosen = {}
+                for r in [r for r in rows if r["request_id"] == rid and r["primary"]]:
+                    chosen.setdefault((r["ranges"], r["range_n"], r["ranges_valid"], r["pair_detail"]), []).append(
+                        f"{r['treatment']}/{r['trial']}")
+                for (rg, n, ok, detail), who in chosen.items():
+                    lines.append(f"- `{rg}` (n {n}){'' if ok is True else ' **ranges overlap**'}, "
+                                 f"{len(who)} answer{'s' if len(who) > 1 else ''} ({', '.join(who)}): {detail}")
+            lines.append("")
+    lines += ["## By domain and request", "",
+              "| domain | request | attempted | executable | schema valid | integrity valid | consistent | delivery | "
+              "conditional | FP | FN | pooled agree / decidable | abstention labels | missing pairs | shuffled "
+              "verdict failures (valid) |", "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|"]
+    for s in [s for s in summary if s["scope"] == "domain"]:
+        lines.append(f"| {s['domain']} | {s['request_id']} | {s['attempted']} | {s['executable']} | "
+                     f"{s['schema_valid']} | {s['integrity_valid']} | {s['oracle_consistent']} | "
+                     f"{_pct(s['delivery_rate'])} | {_pct(s['conditional_consistency_rate'])} | {s['false_positive']} | "
+                     f"{s['false_negative']} | {s['pooled_agree']} / {s['pooled_decidable']} | "
+                     f"{s['abstention_labels']} | {s['missing_comparisons']} | "
+                     f"{s['shuffled_verdict_failures_among_valid']} |")
+    lines += [
+        "", "## Limitations", "",
+        "- **Oracle consistency only.** Agreement means a verdict matches `clear_verdict` on the recorded rows. It does "
+        "not show that a difference is real, causal or useful for inventory, planning or configuration decisions.",
+        "- **No A/A false-alarm rate.** That needs repeated measurements of the same treatment (or a specified "
+        "simulation); neither exists in the frozen archive.",
+        "- **Few decidable comparisons.** Most pairs fall between the oracle's 'same' and 'different' bands or involve "
+        "a group under 5 rows, where any verdict is accepted. Such answers are consistent by construction.",
+        "- **No effect-size field.** The schema reports only n, median and mean per group, so effect-size error cannot "
+        "be measured; group-statistic accuracy and the direction of the reported means are reported instead.",
+        "- **Verdicts are not independent.** Pairs within one answer share groups and code; one trial is one attempt.",
+        "- **Three trials per cell, often fewer usable.** No statistical test is applied.",
+        "- **T7 is not executed in this phase.** Existing adapters and their protocol differences:",
+    ]
+    lines += [f"  - {n}" for n in T7_CERTIFY_NOTES]
+    lines += [
+        "", "## Provenance", "",
+        f"- Archive: `{manifest['inputs']['archive']['path']}` (sha256 `{manifest['inputs']['archive']['sha256']}`)",
+        f"- Code commit: `{manifest['git']['commit']}` on `{manifest['git']['branch']}`"
+        f"{' (uncommitted changes present)' if manifest['git']['dirty'] else ''}",
+        f"- Command: `{manifest['command']}`",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 # ---- phase 4B: T7 prediction through the existing validation adapters ----------------
 
 T7_PROTOCOL = "v2-common: every-fifth-row hold-out, training-mean baseline (t7_validation adapter)"
@@ -2432,7 +2889,8 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
                     "phase 3: Race (guided vs random selection, model vs historical-mean prediction); "
                     "phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters; "
                     "phase 4C: Cars T7 prediction adapters; phase 5C: Fix observed alternatives (Cars, Apache); "
-                    "phase 5D: Justify truthfulness; phase 5E: Remember shortlist quality",
+                    "phase 5D: Justify truthfulness; phase 5E: Remember shortlist quality; "
+                    "phase 5F: Certify agreement with the frozen statistical oracle",
         "status": "post-observation (added after the Task Talk; not pre-registered)",
         "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "command": "python -m harness.external" + (" " + " ".join(argv) if argv else ""),
@@ -2455,6 +2913,7 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
             "fix": FIX_PROTOCOL,
             "justify": JUSTIFY_PROTOCOL,
             "remember": REMEMBER_PROTOCOL,
+            "certify": CERTIFY_PROTOCOL,
         },
         "inputs": {
             "archive": _file_info(archive),
@@ -2786,7 +3245,7 @@ def race_report(sel_rows, pred_rows, summary, manifest):
 
 
 def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=None, race=None, t7=None, fix=None,
-                  justify=None, remember=None):
+                  justify=None, remember=None, certify=None):
     out = guard_out(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     files = {
@@ -2834,6 +3293,13 @@ def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=N
             "remember_summary.csv": to_csv(msum, REMEMBER_SUMMARY_FIELDS),
             "remember_report.md": remember_report(mrows, msum, manifest),
         })
+    if certify is not None:
+        crows, csum, crefs = certify
+        files.update({
+            "certify_quality.csv": to_csv(crows, CERTIFY_FIELDS),
+            "certify_summary.csv": to_csv(csum, CERTIFY_SUMMARY_FIELDS),
+            "certify_report.md": certify_report(crows, csum, manifest, crefs),
+        })
     for name, text in files.items():
         (out / name).write_text(text, encoding="utf-8")
     manifest = dict(manifest, outputs={n: {"sha256": _sha(t.encode("utf-8"))} for n, t in files.items()})
@@ -2868,9 +3334,11 @@ def main(argv=None):
     fix = extract_fix(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
     just = extract_justify(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
     rem = extract_remember(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
+    cert = extract_certify(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
     out = write_outputs(a.out, rows, summary, manifest, sel, sel_summary, (rsel, rpred, summarize_race(rsel, rpred)),
                         t7, (fix, summarize_fix(fix)), (just, summarize_justify(just)),
-                        (rem, summarize_remember(rem)))
+                        (rem, summarize_remember(rem)),
+                        (cert, summarize_certify(cert), certify_reference_table(a.data_dir, domains)))
     print(f"prediction: {len(rows)} attempts, {sum(r['primary'] for r in rows)} in the primary metric")
     print(f"selection:  {len(sel)} attempts, {sum(r['primary'] for r in sel)} in the primary metric")
     print(f"race selection:  {len(rsel)} attempts, {sum(r['primary'] for r in rsel)} in the primary metric")
@@ -2881,6 +3349,8 @@ def main(argv=None):
           f"{sum(bool(r['success']) for r in just)} successful")
     print(f"remember:        {len(rem)} attempts, {sum(r['primary'] for r in rem)} integrity-valid, "
           f"{sum(bool(r['success']) for r in rem)} successful")
+    print(f"certify:         {len(cert)} attempts, {sum(r['primary'] for r in cert)} integrity-valid, "
+          f"{sum(bool(r['success']) for r in cert)} oracle-consistent")
     if t7 is not None:
         print(f"T7 prediction:   {len(t7)} requests, {sum(r['primary'] for r in t7)} in the primary metric")
     print(f"wrote {out}")

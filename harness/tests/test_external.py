@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import unittest.mock
 import zipfile
 
 from harness import answers as A
@@ -466,7 +467,8 @@ class TestOutputs(unittest.TestCase):
                               "t7_prediction.csv", "t7_prediction_report.md",
                               "fix_quality.csv", "fix_summary.csv", "fix_report.md",
                               "justify_quality.csv", "justify_summary.csv", "justify_report.md",
-                              "remember_quality.csv", "remember_summary.csv", "remember_report.md"})
+                              "remember_quality.csv", "remember_summary.csv", "remember_report.md",
+                              "certify_quality.csv", "certify_summary.csv", "certify_report.md"})
             self.assertEqual({p: sha(p) for p in before}, before)
             with open(out / "prediction_mae.csv", newline="") as f:
                 got = list(csv.DictReader(f))
@@ -1906,3 +1908,316 @@ class TestRememberRealArchive(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---- phase 5F: Certify ---------------------------------------------------------------
+
+# Clndrs 4 and 6 share an Mpg+ distribution ("same"), 8 is far lower ("different"), 3 has
+# only three rows (never decidable). Row 25 has no recorded Mpg+ and must not join a group.
+CERTIFY_CSV = "Clndrs,Model,Lbs-,Mpg+\n" + "".join(
+    [f"4,{70 + i % 6},{2000 + 10 * i},{30 + i}\n" for i in range(10)]
+    + [f"6,{70 + i % 6},{2005 + 10 * i},{30 + i}\n" for i in range(10)]
+    + [f"8,{76 + i % 6},{4000 + 10 * i},{10 + i}\n" for i in range(4)]
+    + ["8,80,4040,?\n"]
+    + [f"8,{76 + i % 6},{4050 + 10 * i},{14 + i}\n" for i in range(6)]
+    + [f"3,75,{2500 + 10 * i},{20 + i}\n" for i in range(3)])
+GROUPS = {"group": "Clndrs", "outcome": "Mpg+"}
+
+
+def _groups_answer(data, params=GROUPS, verdicts=None, means=None):
+    """A Certify answer with the true group statistics and, by default, the oracle's verdicts ('same' if undecidable)."""
+    values, members = E.certify_groups(data, params["group"], params["outcome"])
+    groups = {E._label(v): {"n": len(ys), "median": O.median(ys), "mean": (means or {}).get(v, O.mean(ys))}
+              for v, ys in members.items()}
+    comps = []
+    for i, a in enumerate(values):
+        for b in values[i + 1:]:
+            ref = O.clear_verdict(members[a], members[b]) or "same"
+            comps.append({"a": E._label(a), "b": E._label(b), "verdict": (verdicts or {}).get((a, b), ref)})
+    return {"groups": groups, "comparisons": comps}
+
+
+def _verdict_failures(rid, data, ans):
+    return sum(not ok and name.endswith("verdict") for name, ok, _ in A.check_request(rid, data, ans).items)
+
+
+class TestCertifyReference(unittest.TestCase):
+    def test_matches_frozen_clear_verdict(self):
+        cases = [([0] * 5, [1] * 5), ([1, 2, 3, 4, 5], [1, 2, 3, 4, 5]), ([1, 2, 3, 4, 5], [3, 4, 5, 6, 7]),
+                 (list(range(10)), list(range(5, 15))), ([1, 2, 3], [7, 8, 9]), ([], [1, 2, 3, 4, 5])]
+        for xs, ys in cases:
+            self.assertEqual(E.certify_reference(xs, ys)["reference"], O.clear_verdict(xs, ys), (xs, ys))
+
+    def test_thresholds_and_reasons(self):
+        r = E.certify_reference([0] * 5, [1] * 5)
+        self.assertEqual((r["reference"], r["cliffs_delta"], r["ks_rejects"]), ("different", -1.0, True))
+        self.assertEqual(r["reason"], "large effect and KS rejects")
+        self.assertEqual(E.certify_reference([1, 2, 3, 4, 5], [1, 2, 3, 4, 5])["reason"],
+                         "negligible effect and KS does not reject")
+        mid = E.certify_reference(list(range(10)), list(range(2, 12)))
+        self.assertLess(abs(mid["cliffs_delta"]), 0.474)
+        self.assertGreaterEqual(abs(mid["cliffs_delta"]), 0.147)
+        self.assertEqual((mid["reference"], mid["reason"]), (None, "intermediate evidence"))
+
+    def test_small_and_empty_groups_never_decidable(self):
+        small = E.certify_reference([1, 2, 3, 4], [100, 101, 102, 103, 104])   # a huge effect, but 4 rows
+        self.assertEqual((small["reference"], small["reason"]), (None, "group under 5 rows"))
+        empty = E.certify_reference([], [1, 2, 3, 4, 5])
+        self.assertEqual((empty["reference"], empty["cliffs_delta"], empty["ks_rejects"]), (None, "", ""))
+
+    def test_decision_outcomes(self):
+        self.assertEqual(E.decision_outcome("different", "different"), "agree")
+        self.assertEqual(E.decision_outcome("same", "same"), "agree")
+        self.assertEqual(E.decision_outcome("different", "same"), "false_positive")
+        self.assertEqual(E.decision_outcome("same", "different"), "false_negative")
+        self.assertEqual(E.decision_outcome("same", None), "undecidable_said_same")
+        self.assertEqual(E.decision_outcome("different", None), "undecidable_said_different")
+
+
+class TestCertifyGroups(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.d = _data(CERTIFY_CSV)
+
+    def test_group_formation(self):
+        values, members = E.certify_groups(self.d, "Clndrs", "Mpg+")
+        self.assertEqual(values, [3.0, 4.0, 6.0, 8.0])
+        self.assertEqual({v: len(m) for v, m in members.items()}, {3.0: 3, 4.0: 10, 6.0: 10, 8.0: 10})  # row 25 out
+        refs = {(x["a"], x["b"]): x["reference"] for x in [
+            dict(E.certify_reference(members[a], members[b]), a=a, b=b) for i, a in enumerate(values)
+            for b in values[i + 1:]]}
+        self.assertEqual(refs, {(3.0, 4.0): None, (3.0, 6.0): None, (3.0, 8.0): None,
+                                (4.0, 6.0): "same", (4.0, 8.0): "different", (6.0, 8.0): "different"})
+
+    def test_honest_answer_agrees(self):
+        ans = _groups_answer(self.d)
+        m = E.certify_metrics(self.d, "groups", ans, GROUPS)
+        self.assertEqual((m["n_pairs"], m["n_decidable"], m["agree"], m["false_positive"], m["false_negative"]),
+                         (6, 3, 3, 0, 0))
+        self.assertEqual((m["undecidable_said_same"], m["undecidable_said_different"], m["agreement_rate"]), (3, 0, 1.0))
+        self.assertTrue(m["oracle_consistent"])
+        self.assertEqual((m["groups_n_correct"], m["groups_median_correct"], m["groups_mean_correct"]), (4, 4, 4))
+        self.assertEqual(m["group_mean_abs_error"], 0.0)
+
+    def test_false_positive_negative_and_undecidable(self):
+        ans = _groups_answer(self.d, verdicts={(4.0, 6.0): "different", (4.0, 8.0): "same",
+                                               (3.0, 8.0): "different"})
+        m = E.certify_metrics(self.d, "groups", ans, GROUPS)
+        self.assertEqual((m["false_positive"], m["false_negative"], m["agree"]), (1, 1, 1))
+        self.assertEqual((m["undecidable_said_same"], m["undecidable_said_different"]), (2, 1))
+        self.assertAlmostEqual(m["agreement_rate"], 1 / 3)
+        self.assertFalse(m["oracle_consistent"])
+        self.assertEqual((m["said_different"], m["said_same"]), (3, 3))
+
+    def test_honest_same_on_undecidable_is_not_penalised(self):
+        for said in ("same", "different"):
+            ans = _groups_answer(self.d, verdicts={(3.0, 4.0): said, (3.0, 6.0): said, (3.0, 8.0): said})
+            self.assertTrue(E.certify_metrics(self.d, "groups", ans, GROUPS)["oracle_consistent"], said)
+
+    def test_last_listing_of_a_pair_counts(self):
+        ans = _groups_answer(self.d)
+        ans["comparisons"].append({"a": "8", "b": "4", "verdict": "same"})   # contradicts the earlier listing
+        m = E.certify_metrics(self.d, "groups", ans, GROUPS)
+        self.assertEqual((m["comparisons_listed"], m["n_pairs"], m["false_negative"]), (7, 6, 1))
+        self.assertEqual(m["false_negative"], _verdict_failures("CAR-05", self.d, ans))
+
+    def test_direction_respects_goal_sign(self):
+        m = E.certify_metrics(self.d, "groups", _groups_answer(self.d), GROUPS)
+        self.assertEqual((m["direction_checked"], m["direction_agree"]), (2, 2))
+        swapped = _groups_answer(self.d, means={4.0: 12.0, 6.0: 12.0, 8.0: 35.0})   # 8 now looks better on Mpg+
+        m = E.certify_metrics(self.d, "groups", swapped, GROUPS)
+        self.assertEqual((m["direction_agree"], m["groups_mean_correct"]), (0, 1))
+        self.assertTrue(m["oracle_consistent"])          # the verdicts are still right
+        # minimising goal: heavier Lbs- is worse, so the same group order means the opposite direction
+        lbs = {"group": "Clndrs", "outcome": "Lbs-"}
+        m = E.certify_metrics(self.d, "groups", _groups_answer(self.d, lbs), lbs)
+        self.assertEqual(m["direction_agree"], m["direction_checked"])
+        self.assertGreater(m["direction_checked"], 0)
+
+    def test_agrees_with_frozen_checker_verdicts(self):
+        for v in ({}, {(4.0, 6.0): "different"}, {(4.0, 8.0): "same", (6.0, 8.0): "same"},
+                  {(3.0, 4.0): "different", (4.0, 6.0): "different", (6.0, 8.0): "same"}):
+            ans = _groups_answer(self.d, verdicts=v)
+            m = E.certify_metrics(self.d, "groups", ans, GROUPS)
+            self.assertEqual(m["false_positive"] + m["false_negative"], _verdict_failures("CAR-05", self.d, ans), v)
+
+    def test_schema_rejects_abstention_and_missing_pairs(self):
+        bad = _groups_answer(self.d, verdicts={(4.0, 8.0): "inconclusive"})
+        detail = [d for n, ok, d in A.check_request("CAR-05", self.d, bad).items if not ok][0]
+        self.assertEqual(E._schema_error_type(detail), "verdict_label")
+        short = _groups_answer(self.d)
+        short["comparisons"].pop()
+        detail = [d for n, ok, d in A.check_request("CAR-05", self.d, short).items if not ok][0]
+        self.assertEqual(E._schema_error_type(detail), "missing_comparison")
+        nogroup = _groups_answer(self.d)
+        del nogroup["groups"]["3"]
+        detail = [d for n, ok, d in A.check_request("CAR-05", self.d, nogroup).items if not ok][0]
+        self.assertEqual(E._schema_error_type(detail), "group_formation")
+
+    def test_unknown_kind(self):
+        with self.assertRaises(ValueError):
+            E.certify_metrics(self.d, "top", {}, {})
+
+
+class TestCertifyYearGroups(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # the oracle's overall scores need every goal cell, so the row with a missing Mpg+ is dropped here
+        cls.d = _data(CERTIFY_CSV.replace("8,80,4040,?\n", ""))
+
+    def _ans(self, spans, verdict):
+        rows = lambda lo, hi: sum(lo <= self.d.value(r, "Model") <= hi for r in range(1, self.d.n + 1))
+        return {"groups": [{"from": lo, "to": hi, "n": rows(lo, hi)} for lo, hi in spans], "verdict": verdict}
+
+    def test_decidable_split(self):
+        # Models 70-75 hold the light, efficient cars; 76-81 the heavy Clndrs-8 ones: all three scores say different
+        for said, out in (("different", "agree"), ("same", "false_negative")):
+            ans = self._ans([(70, 75), (76, 81)], said)
+            m = E.certify_metrics(self.d, "year_groups", ans, {"group": "Model"})
+            self.assertEqual((m["n_decidable"], m[out]), (1, 1), said)
+            self.assertEqual(m["false_negative"], _verdict_failures("CAR-06", self.d, ans))
+            self.assertEqual((m["ranges_valid"], m["range_n_correct"], m["range_coverage"]), (True, 2, 1.0))
+
+    def test_undecidable_split_accepts_either(self):
+        for said in ("different", "same"):
+            ans = self._ans([(70, 70), (71, 81)], said)           # the first range has under 5 rows
+            m = E.certify_metrics(self.d, "year_groups", ans, {"group": "Model"})
+            self.assertEqual((m["n_decidable"], m[f"undecidable_said_{said}"]), (0, 1))
+            self.assertTrue(m["oracle_consistent"])
+            self.assertEqual(_verdict_failures("CAR-06", self.d, ans), 0)
+
+    def test_conflicting_scores_are_undecidable(self):
+        a = {r: (0.0 if r <= 20 else 1.0) for r in range(1, self.d.n + 1)}
+        b = {r: 0.5 for r in range(1, self.d.n + 1)}
+        ans = self._ans([(70, 72), (73, 81)], "same")
+        with unittest.mock.patch.object(E.O, "aggregates", lambda data: [a, b, b]):
+            refs = [O.clear_verdict([s[r] for r in range(1, 6)], [s[r] for r in range(25, 31)]) for s in (a, b)]
+            self.assertEqual(refs, ["different", "same"])
+            m = E.certify_metrics(self.d, "year_groups", self._ans([(70, 72), (73, 81)], "same"), {"group": "Model"})
+        self.assertEqual(m["n_decidable"], 0)
+        self.assertIn("conflict", m["pair_detail"])
+
+    def test_overlapping_ranges_flagged(self):
+        m = E.certify_metrics(self.d, "year_groups", self._ans([(70, 76), (76, 81)], "different"), {"group": "Model"})
+        self.assertFalse(m["ranges_valid"])
+
+
+class TestCertifyExtract(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        tmp = Path(cls.tmp.name)
+        cars = O.load(E.DATA_DIR / "auto93.csv")
+        honest = _groups_answer(cars)
+        fp = _groups_answer(cars, verdicts={(4.0, 6.0): "same"})              # oracle: different -> false negative
+        abst = _groups_answer(cars, verdicts={(4.0, 8.0): "inconclusive"})
+        missing = _groups_answer(cars)
+        missing["comparisons"].pop(0)
+        years = json.dumps({"groups": [{"from": 70, "to": 76, "n": 216}, {"from": 77, "to": 82, "n": 182}],
+                            "verdict": "different"})
+        both = lambda a: check_txt(f"ANSWER CAR-05 {json.dumps(a)}\nANSWER CAR-06 {years}")
+        scen = {("T1", 1): ("ok", both(honest)), ("T1", 2): ("ok", both(fp)),
+                ("T1", 3): ("ok", check_txt("ANSWER CAR-05 {}", runs=False)), ("T2", 1): ("parse_failed", None),
+                ("T2", 2): ("ok", both(abst)), ("T2", 3): ("ok", check_txt("no answers")),
+                ("T4", 1): ("ok", both(missing)), ("T4", 2): ("ok", check_txt("ANSWER CAR-05 {groups: 1}"))}
+        sem = lambda failed: json.dumps({"status": "pass", "runs": {"base": "ran", "shuffled": "ran"}, "requests": [
+            {"request_id": r, "status": "pass", "failed": list(failed), "notes": []} for r in ("CAR-05", "CAR-06")]})
+        cls.archive, cls.runs, cls.reqs = tmp / "z.zip", tmp / "runs.csv", tmp / "req.csv"
+        with zipfile.ZipFile(cls.archive, "w") as z:
+            for (t, k), (st, chk) in scen.items():
+                if chk:
+                    z.writestr(E.entry_name(ROOT, MODEL, "cars", t, k, 3, "check.txt"), chk)
+                    failed = (["base:4.0 vs 6.0 verdict: said same", "shuffled:4.0 vs 6.0 verdict: said same"]
+                              if (t, k) == ("T1", 2) else [])
+                    z.writestr(E.entry_name(ROOT, MODEL, "cars", t, k, 3, "semantic.json"), sem(failed))
+        cls.runs.write_text("model,domain,treatment,trial,skill_index,status,runs,semantic\n" + "".join(
+            f"{MODEL},cars,{t},{k},3,{st},True,pass\n" for (t, k), (st, _) in scen.items()))
+        cls.reqs.write_text("model,domain,treatment,trial,request_id,status\n" + "".join(
+            f"{MODEL},cars,{t},{k},{r},pass\n" for (t, k) in scen for r in ("CAR-05", "CAR-06")))
+        cls.before = sha(cls.archive)
+        cls.rows = E.extract_certify(cls.archive, cls.runs, cls.reqs, E.DATA_DIR, domains=("cars",))
+        cls.by = {(r["treatment"], r["trial"], r["request_id"]): r for r in cls.rows}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_outcomes_and_denominators(self):
+        self.assertEqual(len(self.rows), 36)
+        want = {("T1", 1): "", ("T1", 2): "", ("T1", 3): "execution_failure", ("T2", 1): "generation_failed",
+                ("T2", 2): "answer_schema_error", ("T2", 3): "answer_missing", ("T3", 1): "not_attempted",
+                ("T4", 1): "answer_schema_error", ("T4", 2): "answer_invalid_json"}
+        for (t, k), reason in want.items():
+            r = self.by[(t, k, "CAR-05")]
+            self.assertEqual(r["exclusion_reason"], reason, (t, k))
+            if reason:
+                self.assertFalse(r["success"] or r["primary"])
+        self.assertTrue(self.by[("T1", 1, "CAR-05")]["success"])
+        r = self.by[("T1", 2, "CAR-05")]
+        self.assertEqual((r["false_negative"], r["success"], r["primary"]), (1, False, True))
+        self.assertEqual((r["archived_base_verdict_failures"], r["archived_shuffled_verdict_failures"]), (1, 1))
+        self.assertEqual((r["shuffled_gate"], r["frozen_verdict_failures"]), ("fail", 1))
+        a = self.by[("T2", 2, "CAR-05")]
+        self.assertEqual((a["schema_error_type"], a["abstention_label"]), ("verdict_label", "'inconclusive'"))
+        self.assertEqual(self.by[("T4", 1, "CAR-05")]["schema_error_type"], "missing_comparison")
+        self.assertEqual(self.by[("T1", 1, "CAR-06")]["undecidable_said_different"], 1)
+
+    def test_summary(self):
+        s = {(x["scope"], x["treatment"], x["request_id"]): x for x in E.summarize_certify(self.rows)}
+        t1 = s[("domain_treatment", "T1", "CAR-05")]
+        self.assertEqual((t1["attempted"], t1["executable"], t1["schema_valid"], t1["integrity_valid"],
+                          t1["oracle_consistent"]), (3, 2, 2, 2, 1))
+        self.assertEqual((t1["false_negative"], t1["pooled_agree"], t1["pooled_decidable"]), (1, 5, 6))
+        self.assertAlmostEqual(t1["median_agreement_rate"], (1 + 2 / 3) / 2)
+        self.assertAlmostEqual(t1["delivery_rate"], 1 / 3)
+        self.assertEqual(t1["shuffled_verdict_failures_among_valid"], 1)
+        t2 = s[("domain_treatment", "T2", "CAR-05")]
+        self.assertEqual((t2["integrity_valid"], t2["abstention_labels"], t2["delivery_rate"],
+                          t2["conditional_consistency_rate"]), (0, 1, 0.0, ""))
+        dom = s[("domain", "all", "CAR-05")]
+        self.assertEqual((dom["attempted"], dom["missing_comparisons"], dom["answer_invalid_json"]), (18, 1, 1))
+
+    def test_archive_untouched(self):
+        self.assertEqual(sha(self.archive), self.before)
+
+
+class TestCertifyRealArchive(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.before = sha(E.ARCHIVE)
+        cls.rows = E.extract_certify()
+        cls.again = E.extract_certify()
+
+    def test_all_attempts(self):
+        self.assertEqual(len(self.rows), 108)
+        for rid in ("CAR-05", "CAR-06", "NASA-05", "NASA-06", "APACHE-05", "APACHE-06"):
+            self.assertEqual(sum(r["request_id"] == rid for r in self.rows), 18)
+
+    def test_agrees_with_frozen_checker_and_archive(self):
+        z = zipfile.ZipFile(E.ARCHIVE)
+        for r in self.rows:
+            if not r["primary"]:
+                continue
+            data = O.load(E.DATA_DIR / E.DATASETS[r["domain"]])
+            ans = A.parse_answers(E.split_check(z.read(r["check_entry"]).decode())[1])[r["request_id"]]
+            key = (r["request_id"], r["treatment"], r["trial"])
+            self.assertEqual(r["false_positive"] + r["false_negative"], _verdict_failures(r["request_id"], data, ans), key)
+            self.assertEqual(r["frozen_verdict_failures"], r["archived_base_verdict_failures"], key)
+            self.assertEqual(r["n_decidable"] + r["undecidable"], r["n_pairs"], key)
+
+    def test_reference_table(self):
+        refs = E.certify_reference_table()
+        dec = {}
+        for x in refs:
+            dec.setdefault(x["request_id"], 0)
+            dec[x["request_id"]] += x["reference"] is not None
+        self.assertEqual(dec, {"CAR-05": 3, "NASA-05": 2, "NASA-06": 1, "APACHE-05": 1, "APACHE-06": 0})
+
+    def test_success_implies_valid(self):
+        for r in self.rows:
+            if r["success"]:
+                self.assertTrue(r["primary"] and r["integrity_valid"] and r["oracle_consistent"])
+
+    def test_reproducible_and_untouched(self):
+        self.assertEqual(E.to_csv(self.rows, E.CERTIFY_FIELDS), E.to_csv(self.again, E.CERTIFY_FIELDS))
+        self.assertEqual(sha(E.ARCHIVE), self.before)
