@@ -1,13 +1,18 @@
 """Build the prompt for skill i+1 from the templates in harness/templates/."""
 
 import hashlib
+import json
 from pathlib import Path
 from string import Template
+
+from harness import answers, oracle
 
 HERE = Path(__file__).resolve().parent
 TEMPLATE_DIR = HERE / "templates"
 VENDOR_DIR = HERE / "vendor"
-EZR_FILES = ("ezr.lua", "ezr-lib.lua")
+EZR_LUA_FILES = ("ezr.lua", "ezr-lib.lua")      # v1 T5/T6, kept for the record
+EZR_PY_DIR = VENDOR_DIR / "python"
+EZR_FILES = ("ezr.py",)                         # library files a reply may not ship
 FENCE_LANG = {".py": "python", ".lua": "lua"}
 
 CLIENTS = {
@@ -38,8 +43,16 @@ def _file_block(path, text):
 def _background(treatment):
     if treatment.background != "ezr":
         return _t(f"background_{treatment.background}").substitute()
-    files = "\n\n".join(_file_block(n, (VENDOR_DIR / n).read_text(encoding="utf-8")) for n in EZR_FILES)
+    files = "\n\n".join(_file_block(n, (EZR_PY_DIR / n).read_text(encoding="utf-8")) for n in EZR_FILES)
     return _t("background_ezr").substitute(ezr_files=files)
+
+
+def answers_block(domain, skill):
+    """The machine-checked answer format for this skill's two requests (protocol v2)."""
+    data = oracle.load(domain.csv_path)
+    k = oracle.arrivals_count(data.n)
+    specs = "\n".join(answers.spec_text(r.id, data) for r in skill.requests)
+    return _t("answers").substitute(arrivals=k, history=data.n - k, budget=oracle.budget(data.n), specs=specs)
 
 
 def build_prompt(domain, skill, treatment, prior_code):
@@ -48,7 +61,7 @@ def build_prompt(domain, skill, treatment, prior_code):
     requests = "\n".join(f"- **{r.id}:** {r.text}" for r in skill.requests)
     contract = _t(f"contract_{treatment.lang}").substitute(
         entry=entry, run_cmd="python" if treatment.lang == "python" else "lua",
-        example_header=f"== {skill.requests[0].id} ==")
+        example_header=f"== {skill.requests[0].id} ==", answers=answers_block(domain, skill).rstrip("\n"))
     return _t("base").substitute(
         client=CLIENTS.get(domain.name, domain.name),
         background=_background(treatment).rstrip("\n"),
@@ -64,8 +77,11 @@ def build_prompt(domain, skill, treatment, prior_code):
 
 
 def template_hash():
+    """Fingerprint of everything that shapes a prompt: templates, ezr, and the answer specs."""
     h = hashlib.sha256()
-    for path in sorted(TEMPLATE_DIR.glob("*.txt")) + [VENDOR_DIR / n for n in EZR_FILES]:
+    for path in sorted(TEMPLATE_DIR.glob("*.txt")) + [EZR_PY_DIR / n for n in EZR_FILES]:
         h.update(path.name.encode())
         h.update(path.read_bytes())
+    h.update(json.dumps({k: v[0] for k, v in answers.KINDS.items()}, sort_keys=True).encode())
+    h.update(json.dumps(answers.REQUESTS, sort_keys=True).encode())
     return h.hexdigest()[:12]

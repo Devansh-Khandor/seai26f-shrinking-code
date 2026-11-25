@@ -1,6 +1,10 @@
 """Run treatments x domains x trials x skills against one LLM backend. Resumable.
 
     python -m harness --backend ollama --model qwen2.5-coder:14b --domains cars --trials 1-3
+
+Protocol v2: every step is also judged by the semantic checker (harness/semantic.py)
+and given a failure category (harness/failures.py). Outputs go under v2/ so the
+v1 results are never touched.
 """
 
 import argparse
@@ -14,16 +18,27 @@ import time
 from harness.backends import (BackendError, ContextOverflow, estimate_tokens, fits,
                               make_backend, with_retries)
 from harness.checks import lua_executable, python_has_sklearn, run_check
+from harness.failures import categorize
 from harness.loc import measure_step
 from harness.prompts import EZR_FILES, build_prompt, template_hash
 from harness.reply import Reply, ReplyParseError, parse_reply
 from harness.requirements import REPO_ROOT, load_domain
-from harness.results import append_row, completed_keys, key_of
+from harness.results import REQ_FIELDS, append_row, completed_keys, key_of
+from harness.semantic import evaluate
 from harness.treatments import TREATMENTS
 from harness.workspace import apply_step, read_code, save_exchange, step_dir, trial_dir
 
 HARNESS_DIR = Path(__file__).resolve().parent
 LOC_FIELDS = ("new_loc", "deleted_loc", "test_loc", "total_loc", "pct_new")
+PROTOCOL = "v2"
+RUNS_ROOT = HARNESS_DIR / "runs" / PROTOCOL
+RESULTS = HARNESS_DIR / "results" / PROTOCOL / "runs.csv"
+# steps whose reply never became runnable code
+NOT_RUN = {"parse_failed": "parse_failure", "output_truncated": "parse_failure", "context_overflow": "parse_failure"}
+
+
+def requirements_path(results_path):
+    return Path(results_path).parent / "requirements.csv"
 
 
 @dataclass
@@ -66,9 +81,14 @@ def run_step(cfg, domain, treatment, trial, skill):
            "runs": False, "contract": False, "prompt_tokens_est": estimate_tokens(prompt),
            "prompt_template_hash": template_hash(), **cfg.backend_info, **{k: "" for k in LOC_FIELDS}}
 
-    def finish(status):
+    def finish(status, check=None, sem=None):
         row.update(status=status, seconds=round(time.monotonic() - start, 1),
                    timestamp=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        if status != "backend_error":
+            row["failure_category"], row["failure_detail"] = categorize(status, check, sem, treatment.background)
+            if sem is None:
+                row["semantic"] = NOT_RUN.get(status, "execution_failure")
+            _requirement_rows(cfg, row, skill, sem, t)
         append_row(cfg.results_path, row)
         return row
 
@@ -100,6 +120,10 @@ def run_step(cfg, domain, treatment, trial, skill):
         return finish("parse_failed")
 
     check = run_check(step, skill, treatment, domain.csv_path, cfg.check_timeout)
+    sem = evaluate([r.id for r in skill.requests], domain.csv_path, check,
+                   lambda path: run_check(step, skill, treatment, path, cfg.check_timeout),
+                   evidence=t / f"step{i:02d}.semantic.json")
+    row["semantic"] = sem.status
     (t / f"step{i:02d}.check.txt").write_text(
         f"runs={check.runs} contract={check.contract} timed_out={check.timed_out} "
         f"output_capped={check.output_capped}\n"
@@ -109,7 +133,25 @@ def run_step(cfg, domain, treatment, trial, skill):
     row.update(runs=check.runs, contract=check.contract, output_capped=check.output_capped, new_loc=loc.new_loc,
                deleted_loc=loc.deleted_loc, test_loc=loc.test_loc,
                total_loc=loc.total_loc, pct_new=loc.pct_new)
-    return finish("timeout" if check.timed_out else "ok")
+    return finish("timeout" if check.timed_out else "ok", check, sem)
+
+
+def _requirement_rows(cfg, row, skill, sem, trial_path):
+    """One requirements.csv row per request, for every finished step (failures included)."""
+    i = int(row["skill_index"])
+    evidence = _rel(trial_path / f"step{i:02d}.semantic.json") if sem else ""
+    by_id = {r.request_id: r for r in sem.requests} if sem else {}
+    for req in skill.requests:
+        r = by_id.get(req.id)
+        out = {k: row.get(k) for k in ("model", "domain", "treatment", "trial", "skill_index", "skill")}
+        out["request_id"] = req.id
+        if r is None:
+            out.update(status=row["semantic"], checks_passed=0, checks_total=0, failed_checks="",
+                       notes=row["status"], evidence="")
+        else:
+            out.update(status=r.status, checks_passed=r.passed, checks_total=r.total,
+                       failed_checks=" | ".join(r.failed)[:2000], notes=" | ".join(r.notes)[:500], evidence=evidence)
+        append_row(requirements_path(cfg.results_path), out, REQ_FIELDS)
 
 
 def preflight(cfg):
@@ -117,6 +159,8 @@ def preflight(cfg):
     chosen = [TREATMENTS[n] for n in cfg.treatments]
     if any(t.lang == "lua" for t in chosen) and lua_executable() is None:
         raise SystemExit("T5/T6 need Lua: install lua/luajit or set HARNESS_LUA")
+    if any(t.background == "ezr" for t in chosen) and sys.version_info < (3, 12):
+        raise SystemExit(f"T5/T6 need Python 3.12+ for ezr.py; this is {sys.version.split()[0]}")
     if any(t.background == "sklearn" for t in chosen) and not python_has_sklearn():
         raise SystemExit(f"T3/T4 need scikit-learn in {sys.executable}: pip install -r requirements.txt")
 
@@ -177,7 +221,7 @@ def _banner(cfg, domains, done, wanted, out):
         if any(t.background == "sklearn" for t in chosen) else ""))
     if any(t.lang == "lua" for t in chosen):
         out(f"  lua       {_lua_version()}")
-    out(f"  template  {template_hash()}  check timeout {cfg.check_timeout:g}s")
+    out(f"  protocol  {PROTOCOL}  template {template_hash()}  check timeout {cfg.check_timeout:g}s")
     out(f"  plan      {','.join(d.name for d in domains)} x {','.join(cfg.treatments)} x trials "
         f"{','.join(map(str, cfg.trials))} x skills {','.join(str(s) for s in sorted(wanted))} = {total} steps, "
         f"{total - remaining} already done, {remaining} to run")
@@ -189,7 +233,9 @@ def _progress(row):
     if row["status"] != "ok":
         return f"{head} {row['status']} ({row['seconds']:.0f}s)"
     mark = lambda ok: "✓" if ok else "✗"
-    return f"{head} {mark(row['runs'])} runs {mark(row['contract'])} contract ({row['seconds']:.0f}s)"
+    return (f"{head} {mark(row['runs'])} runs {mark(row['contract'])} contract "
+            f"{mark(row.get('semantic') == 'pass')} semantic ({row['seconds']:.0f}s)"
+            + (f"  [{row['failure_category']}]" if row.get("failure_category") else ""))
 
 
 def _dry_run(cfg, domains, out):
@@ -254,8 +300,8 @@ def build_parser():
     ap.add_argument("--trials", default="1-3")
     ap.add_argument("--skills", default="1-10")
     ap.add_argument("--check-timeout", type=float, default=120.0)
-    ap.add_argument("--runs-root", type=Path, default=HARNESS_DIR / "runs")
-    ap.add_argument("--results", type=Path, default=HARNESS_DIR / "results" / "runs.csv")
+    ap.add_argument("--runs-root", type=Path, default=RUNS_ROOT)
+    ap.add_argument("--results", type=Path, default=RESULTS)
     ap.add_argument("--dry-run", action="store_true")
     return ap
 

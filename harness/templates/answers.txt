@@ -1,0 +1,12 @@
+## Machine-checked answers (required)
+For each request, after its `== <ID> ==` section, print one line: `ANSWER <ID> ` followed by a single-line JSON object as specified below. These lines are checked automatically against the data.
+- Rows are identified by their 1-based position among the data rows of the CSV given on the command line (the header is not a row).
+- Your program will also be run on other CSV files with the same columns: rows reordered, some values changed, a few rows added. Compute every answer from the file you are given; never hard-code row numbers or values.
+- Columns ending in `+` are goals to maximize, `-` goals to minimize; columns ending in `X` are not inputs.
+- A cell containing `?` is a missing value. Keep every row: row numbers, counts, held-out rows, arrivals and history all include rows with missing values. Skip only the missing cell itself.
+- Held-out rows: every row whose number is divisible by 5. Where a request says so, treat a held-out row's predicted column as unknown.
+- Arrivals: the last round(0.2 * number of rows) rows of the file, in order; the rows before them are the history (for this file: $arrivals arrivals after $history history rows).
+- Budget: at most min(30, number of rows // 5) rows may be evaluated (for this file: $budget); evaluating a row means looking at its goal values.
+- Use plain JSON numbers (no NaN), `true`/`false`, and column names exactly as in the header.
+
+$specs

@@ -7,7 +7,9 @@ from unittest import mock
 
 from harness.checks import contract_ok, lua_executable, run_check
 from harness.requirements import load_domain
-from harness.treatments import TREATMENTS
+from harness.treatments import TREATMENTS, Treatment
+
+LUA_EZR = Treatment("T5v1", "ezr", False, "lua")   # protocol v1's T5
 
 CARS = load_domain("cars")
 CERTIFY = CARS.skills[2]  # CAR-05, CAR-06
@@ -101,7 +103,7 @@ class TestRunCheck(unittest.TestCase):
     def test_run_lua_uses_vendor(self):
         lua_print = "".join(f"print({line!r})\n".replace("'", '"') for line in GOOD.splitlines())
         self.write("skill_03.lua", 'local ezr = require("ezr")\nprint(ezr.same({1,2,3},{1,2,3}))\n' + lua_print)
-        r = run_check(self.step, CERTIFY, TREATMENTS["T5"], CARS.csv_path)
+        r = run_check(self.step, CERTIFY, LUA_EZR, CARS.csv_path)
         self.assertTrue(r.runs, r.stderr)
         self.assertTrue(r.contract)
         self.assertIn("true", r.stdout)
@@ -114,9 +116,22 @@ class TestRunCheck(unittest.TestCase):
         lua_print = "".join(f"print({line!r})\n".replace("'", '"') for line in GOOD.splitlines())
         self.write("skill_03.lua", 'local ezr = require("ezr")\nlocal n = 0\n'
                    'for _ in ezr.csv(arg[1]) do n = n + 1 end\nprint("rows " .. n)\n' + lua_print)
-        r = run_check(self.step, CERTIFY, TREATMENTS["T5"], CARS.csv_path)
+        r = run_check(self.step, CERTIFY, LUA_EZR, CARS.csv_path)
         self.assertTrue(r.runs, r.stderr)
         self.assertIn("rows 399", r.stdout)
+
+    def test_python_ezr_importable_for_t5_only(self):
+        body = "".join(f"print({line!r})\n" for line in GOOD.splitlines())
+        self.write("skill_03.py", "import sys, ezr\nprint(ezr.same([1, 2, 3], [1, 2, 3]))\n"
+                   "print('rows', len(list(ezr.csv(sys.argv[1]))))\n" + body)
+        r = run_check(self.step, CERTIFY, TREATMENTS["T5"], CARS.csv_path)
+        self.assertTrue(r.runs, r.stderr)
+        self.assertTrue(r.contract)
+        self.assertIn("True", r.stdout)
+        self.assertIn("rows 399", r.stdout)
+        r1 = run_check(self.step, CERTIFY, TREATMENTS["T1"], CARS.csv_path)
+        self.assertFalse(r1.runs)
+        self.assertIn("No module named 'ezr'", r1.stderr)
 
 
 if __name__ == "__main__":

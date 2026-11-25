@@ -1,3 +1,3 @@
-Write Lua using only the standard Lua libraries and the library below; no other modules are installed. The library below is available as `local ezr = require("ezr")`. Its functions are fields of that table, e.g. `ezr.same`. These library files are provided for you: do not modify them and do not include them in your reply.
+Use Python 3 standard library and the ezr library below; no other third-party packages are installed. The library is importable as `import ezr` (or `from ezr import ...`). It is provided for you: do not modify it and do not include it in your reply.
 
 $ezr_files

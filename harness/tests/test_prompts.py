@@ -18,7 +18,8 @@ def prompt(t, prior=None):
 class TestPrompts(unittest.TestCase):
     def test_treatment_table(self):
         self.assertEqual(TREATMENTS["T4"], Treatment("T4", "sklearn", True, "python"))
-        self.assertEqual(TREATMENTS["T5"].lang, "lua")
+        self.assertEqual(TREATMENTS["T5"], Treatment("T5", "ezr", False, "python"))
+        self.assertEqual(TREATMENTS["T6"], Treatment("T6", "ezr", True, "python"))
         self.assertEqual(sorted(TREATMENTS), ["T1", "T2", "T3", "T4", "T5", "T6"])
 
     def test_requests_verbatim(self):
@@ -35,10 +36,11 @@ class TestPrompts(unittest.TestCase):
 
     def test_ezr_background(self):
         t5, t1 = prompt("T5"), prompt("T1")
-        for s in ("function same(", 'require("ezr")', "skill_03.lua"):
+        for s in ("def same(xs", "import ezr", "FILE: ezr.py"):
             self.assertIn(s, t5)
             self.assertNotIn(s, t1)
         self.assertIn("skill_03.py", t1)
+        self.assertIn("skill_03.py", t5)
 
     def test_sklearn_background(self):
         self.assertIn("scikit-learn", prompt("T3"))
@@ -54,6 +56,12 @@ class TestPrompts(unittest.TestCase):
         p = prompt("T1")
         self.assertIn("== <ID> ==", p)
         self.assertIn("DELETE:", p)
+
+    def test_missing_value_rule(self):
+        # auto93 has "?" cells; the oracle keeps those rows, so the prompt must say so.
+        from harness import oracle
+        self.assertEqual(oracle.load(CARS.csv_path).n, 398)
+        self.assertIn("A cell containing `?` is a missing value. Keep every row", prompt("T1"))
 
     def test_csv_preview(self):
         lines = csv_preview(CARS.csv_path).splitlines()

@@ -4,3 +4,5 @@
 - Do not write tests.
 - Provide the entry point `$entry`, run as `$run_cmd $entry <csv path>`.
 - When run, it must print, for each request, a line that is exactly `== <ID> ==` (for example `$example_header`) followed by at least three lines of results, including the actual numbers.
+
+$answers

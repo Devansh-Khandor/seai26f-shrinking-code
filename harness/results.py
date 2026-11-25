@@ -7,7 +7,13 @@ from pathlib import Path
 FIELDS = ("model", "backend", "domain", "treatment", "trial", "skill_index", "skill", "status",
           "runs", "contract", "new_loc", "deleted_loc", "test_loc", "total_loc", "pct_new",
           "prompt_tokens", "response_tokens", "prompt_tokens_est", "finish_reason", "output_capped",
-          "seconds", "timestamp", "prompt_template_hash", "temperature", "think", "quantization", "model_digest")
+          "seconds", "timestamp", "prompt_template_hash", "temperature", "think", "quantization", "model_digest",
+          "semantic", "failure_category", "failure_detail")
+
+# One row per request per step: the semantic (requirement) verdicts behind `semantic`.
+REQ_FIELDS = ("model", "domain", "treatment", "trial", "skill_index", "skill", "request_id", "status",
+              "checks_passed", "checks_total", "failed_checks", "notes", "evidence")
+REQ_KEY = ("model", "domain", "treatment", "trial", "skill_index", "request_id")
 
 # backend_error is deliberately absent: resume retries it.
 DONE_STATUSES = {"ok", "parse_failed", "context_overflow", "output_truncated", "timeout"}
@@ -18,15 +24,20 @@ def key_of(row):
     return tuple(str(row[k]) for k in KEY)
 
 
-def append_row(path, row):
+def append_row(path, row, fields=FIELDS):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     new = not path.exists() or path.stat().st_size == 0
+    if not new:
+        with open(path, newline="", encoding="utf-8") as f:
+            header = next(csv.reader(f), [])
+        if tuple(header) != tuple(fields):
+            raise ValueError(f"{path} has different columns (an older protocol?); use a new results file")
     with open(path, "a", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=FIELDS, extrasaction="ignore")
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         if new:
             w.writeheader()
-        w.writerow({k: "" if row.get(k) is None else row.get(k) for k in FIELDS})
+        w.writerow({k: "" if row.get(k) is None else row.get(k) for k in fields})
         f.flush()
         os.fsync(f.fileno())
 

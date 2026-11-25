@@ -1,0 +1,26 @@
+regrade 2026-11-18T16:24:12+00:00: 83 steps (cars,nasa,apache; T1-T6; trials 1-100; skills 5,6)
+cars T5 1 5: step fail -> pass
+cars T5 1 5 CAR-10: fail -> pass  was: base:biggest difference first: Volume is not in the top 3 by Cliff's delta ['Clndrs', 'HpX', 'Model'] | shuffled:biggest difference first: Volume is not in the top 3 by Cliff's delta ['Clndrs', 'HpX',  now: 
+cars T2 2 6: step fail -> pass
+cars T2 2 6 CAR-12: fail -> pass  was: base:answer format: preferred must be a row number 1..398, got 'a'  now: 
+nasa T1 1 5 NASA-09: fail -> pass  was: base:top-ranked column is strongly associated: time is not in the top 3 by Cliff's delta ['MonthsX', 'centerX', 'rely'] or Spearman ['MonthsX', 'centerX', 'idX'] | shuffled:top-ranked column is strong  now: 
+nasa T2 1 5 NASA-09: fail -> pass  was: base:top-ranked column is strongly associated: time is not in the top 3 by Cliff's delta ['MonthsX', 'centerX', 'rely'] or Spearman ['MonthsX', 'centerX', 'idX'] | shuffled:top-ranked column is strong  now: 
+nasa T2 2 6 NASA-12: fail -> pass  was: base:answer format: preferred must be a row number 1..93, got 'a'  now: 
+nasa T3 2 5: step fail -> pass
+nasa T3 2 5 NASA-09: fail -> pass  was: base:top-ranked column is strongly associated: time is not in the top 3 by Cliff's delta ['MonthsX', 'YearX', 'centerX'] or Spearman ['MonthsX', 'centerX', 'idX'] | shuffled:top-ranked column is stron  now: 
+nasa T5 2 6 NASA-12: fail -> pass  was: base:answer format: scores key must be a row number 1..93, got 'a'  now: 
+nasa T1 3 6 NASA-12: fail -> pass  was: base:answer format: preferred must be a row number 1..93, got 'a'  now: 
+apache T1 1 6: step fail -> pass
+apache T1 1 6 APACHE-12: fail -> pass  was: base:answer format: preferred must be a row number 1..192, got 'a'  now: 
+apache T4 1 6: step fail -> pass
+apache T4 1 6 APACHE-12: fail -> pass  was: base:answer format: preferred must be a row number 1..192, got 'a'  now: 
+apache T5 1 6: step fail -> pass
+apache T5 1 6 APACHE-12: fail -> pass  was: base:answer format: preferred must be a row number 1..192, got 'b'  now: 
+apache T6 1 6: step fail -> pass
+apache T6 1 6 APACHE-12: fail -> pass  was: base:answer format: scores key must be a row number 1..192, got 'a'  now: 
+apache T2 2 6: step fail -> pass
+apache T2 2 6 APACHE-12: fail -> pass  was: base:answer format: preferred must be a row number 1..192, got 'a'  now: 
+apache T5 2 6: step fail -> pass
+apache T5 2 6 APACHE-12: fail -> pass  was: base:answer format: scores key must be a row number 1..192, got 'a'  now: 
+23 changes
+
