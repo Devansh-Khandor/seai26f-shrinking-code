@@ -889,6 +889,266 @@ def summarize_race(sel_rows, pred_rows):
     return out
 
 
+# ---- phase 4B: T7 prediction through the existing validation adapters ----------------
+
+T7_PROTOCOL = "v2-common: every-fifth-row hold-out, training-mean baseline (t7_validation adapter)"
+T7_IDENTITY = "T7: one human-directed implementation per domain; deterministic; not an LLM trial"
+# (domain, request, step, adapter, original T7 modules the adapter imports)
+T7_PREDICTION = (
+    ("nasa", "NASA-03", GUESS_STEP, "t7_validation/adapters/nasa/guess.py",
+     ("human_t7/nasa/remember.py", "human_t7/nasa/guess.py")),
+    ("nasa", "NASA-19", RACE_STEP, "t7_validation/adapters/nasa/race.py",
+     ("human_t7/nasa/remember.py", "human_t7/nasa/guess.py", "human_t7/nasa/choose.py", "human_t7/nasa/race.py")),
+    ("apache", "APACHE-03", GUESS_STEP, "t7_validation/adapters/apache/guess.py",
+     ("human_t7/apache/remember.py", "human_t7/apache/guess.py")),
+    ("apache", "APACHE-20", RACE_STEP, "t7_validation/adapters/apache/race.py",
+     ("human_t7/apache/remember.py", "human_t7/apache/guess.py", "human_t7/apache/choose.py",
+      "human_t7/apache/race.py")),
+)
+T7_TIMEOUT = 300
+
+# The original T7 write-ups use other splits; quoted only to keep them separately identified.
+T7_ORIGINAL = {
+    "NASA-03": ("human_t7/nasa/RESULTS.md", "first 74 rows train, last 19 held out; the Guess section defers to "
+                "the Race section for its MAE comparison", "kNN 1,092.17 vs historical mean 1,031.84 (effort)"),
+    "NASA-19": ("human_t7/nasa/RESULTS.md", "first 74 rows train, last 19 held out",
+                "kNN 1,092.17 vs historical mean 1,031.84 (effort)"),
+    "APACHE-03": ("human_t7/apache/RESULTS.md", "seeded shuffled 154/38 split (seed 42)",
+                  "kNN 174.79 vs historical mean 484.05"),
+    "APACHE-20": ("human_t7/apache/RESULTS.md", "seeded shuffled 154/38 split reused from Guess",
+                  "kNN 174.79 vs historical mean 484.05"),
+}
+
+T7_PREDICTION_FIELDS = [
+    "treatment", "implementation", "is_independent_trial", "domain", "request_id", "skill_index", "kind",
+    "protocol", "target", "target_direction", "adapter", "implementation_files",
+    "check_runs", "check_timed_out", "step_status", "request_status", "contract",
+    "answer_state", "answer_detail", "leakage_gate", "leakage_detail", "shuffled_gate", "rerun_outcomes",
+    "n_rows", "n_training", "n_heldout", "heldout_rows_match", "model_mae", "baseline_mean", "baseline_mae",
+    "mae_ratio", "mae_advantage", "beats_baseline", "rows_model_better", "rows_model_better_frac",
+    "reported_mae", "reported_mae_matches", "reported_baseline", "reported_baseline_matches",
+    "reported_mae_baseline", "reported_mae_baseline_matches", "reported_verdict",
+    "primary", "exclusion_reason",
+    "dataset_sha256", "adapter_sha256", "implementation_sha256", "stdout_sha256", "evidence_sha256",
+]
+
+T7_PREDICTION_PROTOCOL = {
+    "identity": T7_IDENTITY,
+    "protocol": T7_PROTOCOL,
+    "requests": {rid: {"domain": d, "step": s, "adapter": a, "implementation": list(i)}
+                 for d, rid, s, a, i in T7_PREDICTION},
+    "execution": "each adapter is run locally with the current Python (-B, PYTHONDONTWRITEBYTECODE=1) on the domain "
+                 "CSV; harness.semantic.evaluate reruns it on its shuffled, mask and (Race) honeypot copies in "
+                 "temporary directories; evidence is kept in memory and hashed, never written to t7_validation/results",
+    "scoring": "same functions as phases 1 and 3: baseline, model_mae, mae_ratio on harness.oracle.held_out rows",
+    "inclusion": "same as T1-T6: ran; ANSWER accepted by harness.answers.check_request; mask leakage rerun passed",
+    "comparison": "descriptive only; T7 is n = 1 per domain, so same()/bestRanks are not applied",
+    "development_note": "the T7 adapters were written and refined against the common semantic checker; "
+                        "T1-T6 programs were generated one-shot without access to it",
+}
+
+
+def _sha_file(rel):
+    return _sha((REPO / rel).read_bytes())
+
+
+def run_adapter(adapter, csv_path, request_ids_, timeout=T7_TIMEOUT):
+    """Run a T7 validation adapter on CSV_PATH; return a harness CheckResult. No files are written:
+    bytecode is disabled and the adapter only prints."""
+    from harness.checks import CheckResult, contract_ok
+    import os
+    import time
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    start = time.monotonic()
+    try:
+        p = subprocess.run([sys.executable, "-B", str(REPO / adapter), str(csv_path)], cwd=REPO, env=env,
+                           capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        out = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
+        return CheckResult(False, False, True, time.monotonic() - start, out, "timed out")
+    ok = p.returncode == 0
+    return CheckResult(ok, ok and contract_ok(p.stdout, request_ids_), False, time.monotonic() - start,
+                       p.stdout, p.stderr)
+
+
+def _semantic_dict(sem):
+    return {"status": sem.status, "runs": dict(sem.runs), "requests": [vars(r) for r in sem.requests]}
+
+
+def t7_prediction_row(domain, rid, step, adapter, implementation, data_dir=DATA_DIR, runner=run_adapter):
+    from harness import semantic as S
+    kind, params = A.REQUESTS[rid]
+    if kind not in ("predict", "race_predict") or rid not in request_ids(domain, step):
+        raise ValueError(f"{rid} is not a prediction request of {domain} step {step}")
+    target = params["target"]
+    csv_path = Path(data_dir) / DATASETS[domain]
+    data = O.load(csv_path)
+    base_mean, base_mae, held = baseline(data, target)
+    rids = request_ids(domain, step)
+    row = {f: "" for f in T7_PREDICTION_FIELDS}
+    row.update(treatment="T7", implementation="human-directed (single deterministic implementation)",
+               is_independent_trial=False, domain=domain, request_id=rid, skill_index=step, kind=kind,
+               protocol=T7_PROTOCOL, target=target, target_direction=dict(data.goals())[target], adapter=adapter,
+               implementation_files=";".join(implementation), n_rows=data.n, n_training=data.n - len(held),
+               n_heldout=len(held), baseline_mean=base_mean, baseline_mae=base_mae, primary=False,
+               leakage_gate="not_run", shuffled_gate="not_run",
+               dataset_sha256=_sha(csv_path.read_bytes()), adapter_sha256=_sha_file(adapter),
+               implementation_sha256=";".join(f"{p}={_sha_file(p)[:16]}" for p in implementation))
+    base = runner(adapter, csv_path, rids)
+    sem = _semantic_dict(S.evaluate(rids, csv_path, base, lambda p: runner(adapter, p, rids)))
+    req = next(r for r in sem["requests"] if r["request_id"] == rid)
+    row.update(check_runs=base.runs, check_timed_out=base.timed_out, contract=base.contract,
+               step_status=sem["status"], request_status=req["status"],
+               rerun_outcomes=";".join(f"{k}={v}" for k, v in sorted(sem["runs"].items())),
+               stdout_sha256=_sha(base.stdout.encode("utf-8")),
+               evidence_sha256=_sha(json.dumps(sem, sort_keys=True).encode("utf-8")))
+    if not base.runs:
+        row.update(answer_state="not_checked",
+                   exclusion_reason="execution_timeout" if base.timed_out else "execution_failure")
+        return row
+    ans = A.parse_answers(base.stdout).get(rid)
+    if ans is None:
+        row.update(answer_state="missing", exclusion_reason="answer_missing")
+        return row
+    if isinstance(ans, str):
+        row.update(answer_state="invalid_json", answer_detail=ans[:200], exclusion_reason="answer_invalid_json")
+        return row
+    ctx = A.check_request(rid, data, ans, "base")
+    bad = [d for name, ok, d in ctx.items if name.endswith("answer format") and not ok]
+    if bad:
+        row.update(answer_state="schema_error", answer_detail=bad[0][:200], exclusion_reason="answer_schema_error")
+        return row
+    preds = A._heldout_preds(ctx)
+    mae = model_mae(data, target, preds)
+    ratio, why = mae_ratio(mae, base_mae)
+    better = sum(abs(preds[r] - data.value(r, target)) < abs(base_mean - data.value(r, target)) for r in held)
+    row.update(answer_state="valid", heldout_rows_match=sorted(preds) == held, model_mae=mae,
+               mae_ratio="" if ratio is None else ratio, mae_advantage=base_mae - mae,
+               beats_baseline="" if ratio is None else mae < base_mae,
+               rows_model_better=better, rows_model_better_frac=better / len(held))
+    if kind == "predict":
+        rep = A.num(ans.get("mae")) if "mae" in ans else None
+        row.update(reported_mae="" if rep is None else rep,
+                   reported_mae_matches="" if rep is None else O.close(rep, mae, rel=0.01))
+    else:
+        rb, rm, rmb = (A.num(A.need(ans, k)) for k in ("baseline", "mae_model", "mae_baseline"))
+        row.update(reported_baseline=rb, reported_baseline_matches=O.close(rb, base_mean, rel=0.005),
+                   reported_mae=rm, reported_mae_matches=O.close(rm, mae, rel=0.01),
+                   reported_mae_baseline=rmb, reported_mae_baseline_matches=O.close(rmb, base_mae, rel=0.01),
+                   reported_verdict=ans.get("verdict", ""))
+    gate, detail = leakage_gate(sem, rid, target)
+    row.update(leakage_gate=gate, leakage_detail=detail, shuffled_gate=shuffled_gate(sem, rid))
+    if gate == "fail":
+        row["exclusion_reason"] = "leakage_failed"
+    elif gate != "pass":
+        row["exclusion_reason"] = "leakage_unverified"
+    elif why:
+        row["exclusion_reason"] = why
+    else:
+        row["primary"] = True
+    return row
+
+
+def extract_t7_prediction(data_dir=DATA_DIR, runner=run_adapter, specs=T7_PREDICTION):
+    rows = [t7_prediction_row(d, rid, s, a, i, data_dir, runner) for d, rid, s, a, i in specs]
+    if len({r["request_id"] for r in rows}) != len(rows):
+        raise ValueError("duplicate T7 records")
+    return rows
+
+
+def t7_prediction_report(t7_rows, guess_rows, race_rows, manifest):
+    """T7 beside the T1-T6 cells of the same request. Descriptive only: T7 is n = 1."""
+    lines = [
+        "# External metric, phase 4B: T7 prediction (NASA and Apache) beside T1–T6",
+        "",
+        "**Status: post-observation analysis.** Added after the Task Talk; not part of the pre-registered plan in "
+        "`docs/hypotheses.md`.",
+        "",
+        "**What T7 is here.** One human-directed implementation per domain, run through its existing "
+        "`t7_validation` adapter. It is deterministic: rerunning it gives the same numbers. Each row below is "
+        "that one implementation's result, **not** an LLM trial, and the four requests are not a sample of "
+        "repetitions. No `same()`, `bestRanks()` or other significance test is applied to T7.",
+        "",
+        "**How the two sides were built differs.** The T7 adapters were written and refined against the common "
+        "semantic checker. The T1–T6 programs were generated one-shot by `gpt-oss-20b` without access to it; "
+        "their failed and crashed attempts are counted, while T7's development iterations are not.",
+        "",
+        "## Protocol alignment",
+        "",
+        "Both sides are scored by the same code (`harness.external.baseline`, `model_mae`, `mae_ratio`) on the same "
+        "CSV, the same held-out rows (`harness.oracle.held_out`: row numbers divisible by 5), the same target and "
+        "the same training-mean baseline. MAE is recomputed from the recorded predictions; reported values are "
+        "only compared.",
+        "",
+        "| request | domain | target | rows | training | held out | held-out rows match | baseline mean | "
+        "baseline MAE |",
+        "|---|---|---|---:|---:|---:|---|---:|---:|",
+    ]
+    for r in t7_rows:
+        lines.append(f"| {r['request_id']} | {r['domain']} | `{r['target']}` | {r['n_rows']} | {r['n_training']} | "
+                     f"{r['n_heldout']} | {r['heldout_rows_match']} | {_num(r['baseline_mean'])} | "
+                     f"{_num(r['baseline_mae'])} |")
+    lines += ["", "## T7 results", "",
+              "| request | model MAE | baseline MAE | MAE ratio | beats baseline | held-out rows better than "
+              "baseline | semantic verdict | leakage (mask) | shuffled | reruns | included |",
+              "|---|---:|---:|---:|---|---:|---|---|---|---|---|"]
+    for r in t7_rows:
+        lines.append(f"| {r['request_id']} | {_num(r['model_mae'])} | {_num(r['baseline_mae'])} | "
+                     f"{_num(r['mae_ratio'])} | {r['beats_baseline']} | {r['rows_model_better']}/{r['n_heldout']} | "
+                     f"{r['request_status']} | {r['leakage_gate']} | {r['shuffled_gate']} | {r['rerun_outcomes']} | "
+                     f"{'yes' if r['primary'] else r['exclusion_reason']} |")
+    lines += ["", "A passed mask rerun shows the predictions did not move when only held-out targets changed. It is a "
+              "test, not a proof that no information leaked.", ""]
+    for r in t7_rows:
+        src = guess_rows if r["kind"] == "predict" else race_rows
+        cell = [x for x in src if x["domain"] == r["domain"] and x["request_id"] == r["request_id"]]
+        prim = [x for x in cell if x["primary"]]
+        lines += [f"## {r['request_id']}: T7 beside T1–T6 ({'Phase 1 Guess' if r['kind'] == 'predict' else 'Phase 3 Race'})",
+                  "", "| treatment | usable / attempted | median MAE ratio | min–max ratio | beats baseline |",
+                  "|---|---:|---:|---|---:|"]
+        for t in TREATMENTS:
+            sel = [x for x in cell if x["treatment"] == t]
+            p = [x["mae_ratio"] for x in sel if x["primary"]]
+            rng = f"{min(p):.3f}–{max(p):.3f}" if p else "—"
+            beats = sum(bool(x["beats_baseline"]) for x in sel if x["primary"])
+            lines.append(f"| {t} | {len(p)} / {len(sel)} | {_num(_med(p))} | {rng} | {beats}/{len(p)} |")
+        t7 = r["mae_ratio"]
+        lines.append(f"| **T7** (n = 1, not a trial) | {1 if r['primary'] else 0} / 1 | {_num(t7)} | — | "
+                     f"{'1/1' if r['beats_baseline'] is True else '0/1' if r['primary'] else '—'} |")
+        if r["primary"] and prim:
+            lower = sum(x["mae_ratio"] > t7 for x in prim)
+            ties = sum(abs(x["mae_ratio"] - t7) < 1e-9 for x in prim)
+            near = min(prim, key=lambda x: abs(x["mae_ratio"] - t7))
+            gap = t7 - near["mae_ratio"]
+            lines += ["", f"Position only: T7's ratio is lower than {lower} of the {len(prim)} usable T1–T6 trials "
+                      f"and equal to {ties} (all treatments pooled). The closest usable T1–T6 trial "
+                      f"({near['treatment']} trial {near['trial']}, ratio {near['mae_ratio']:.4f}) differs by "
+                      f"{gap:+.4f} in ratio, {r['model_mae'] - near['model_mae']:+.3f} in MAE. This is a "
+                      "description, not a test."]
+        orig = T7_ORIGINAL[r["request_id"]]
+        lines += ["", f"Original T7 write-up (`{orig[0]}`), a **different protocol** ({orig[1]}): {orig[2]}. Not "
+                  "comparable with the numbers above.", ""]
+    lines += [
+        "## Limitations", "",
+        "- **n = 1 per domain and request.** T7 can only be placed beside the T1–T6 distributions, not tested "
+        "against them.",
+        "- **Guess and Race prediction share data.** For NASA (Effort) and Apache (Performance) the Guess and Race "
+        "requests use the same target, split and model in T7, so their two rows are near-duplicates, not two "
+        "pieces of evidence.",
+        "- **Few usable T1–T6 trials.** Several T1–T6 cells have 0–1 usable trials.",
+        "- **Development process differs** (see above). A T7 result that matches or beats T1–T6 here reflects an "
+        "implementation refined against the checker.",
+        "- **Cars T7 is not included**: it has no validation adapters yet.",
+        "", "## Provenance", "",
+        f"- Code commit: `{manifest['git']['commit']}` on `{manifest['git']['branch']}`"
+        f"{' (uncommitted changes present)' if manifest['git']['dirty'] else ''}",
+        f"- Command: `{manifest['command']}`",
+        "- Adapter, implementation, dataset, stdout and evidence hashes: `t7_prediction.csv`; all output hashes: "
+        "`manifest.json`.", "",
+    ]
+    return "\n".join(lines)
+
+
 # ---- summaries ---------------------------------------------------------------------
 
 def _rate(a, b):
@@ -1116,7 +1376,8 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
                             and _sha(z.read(inside)) == _sha(Path(path).read_bytes()))
     return {
         "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; "
-                    "phase 3: Race (guided vs random selection, model vs historical-mean prediction)",
+                    "phase 3: Race (guided vs random selection, model vs historical-mean prediction); "
+                    "phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters",
         "status": "post-observation (added after the Task Talk; not pre-registered)",
         "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "command": "python -m harness.external" + (" " + " ".join(argv) if argv else ""),
@@ -1135,6 +1396,7 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
             "programs_rerun": 0,
             "selection": SELECTION_PROTOCOL,
             "race": RACE_PROTOCOL,
+            "t7_prediction": T7_PREDICTION_PROTOCOL,
         },
         "inputs": {
             "archive": _file_info(archive),
@@ -1143,6 +1405,8 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
             "archive_csv_copies_identical": copies,
             "datasets": {d: _file_info(Path(data_dir) / DATASETS[d]) for d in DOMAINS},
             "code": {m: _file_info(HARNESS_DIR / f"{m}.py") for m in ("external", "answers", "oracle", "semantic")},
+            "t7_sources": {rel: _file_info(REPO / rel) for rel in sorted({x for _, _, _, ad, impl in T7_PREDICTION
+                                                                         for x in (ad, *impl)})},
         },
         "git": {"commit": _git("rev-parse", "HEAD"), "branch": _git("branch", "--show-current"),
                 "dirty": bool(_git("status", "--porcelain"))},
@@ -1463,7 +1727,7 @@ def race_report(sel_rows, pred_rows, summary, manifest):
     return "\n".join(lines)
 
 
-def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=None, race=None):
+def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=None, race=None, t7=None):
     out = guard_out(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     files = {
@@ -1485,6 +1749,11 @@ def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=N
             "race_summary.csv": to_csv(rsum, RACE_SUMMARY_FIELDS),
             "race_report.md": race_report(rs, rp, rsum, manifest),
         })
+    if t7 is not None:
+        files.update({
+            "t7_prediction.csv": to_csv(t7, T7_PREDICTION_FIELDS),
+            "t7_prediction_report.md": t7_prediction_report(t7, rows, race[1] if race else [], manifest),
+        })
     for name, text in files.items():
         (out / name).write_text(text, encoding="utf-8")
     manifest = dict(manifest, outputs={n: {"sha256": _sha(t.encode("utf-8"))} for n, t in files.items()})
@@ -1501,6 +1770,7 @@ def main(argv=None):
     p.add_argument("--data-dir", type=Path, default=DATA_DIR)
     p.add_argument("--out", type=Path, default=OUT_ROOT / MODEL)
     p.add_argument("--domains", default=",".join(DOMAINS), help="comma-separated subset of cars,nasa,apache")
+    p.add_argument("--skip-t7", action="store_true", help="do not run the T7 validation adapters")
     a = p.parse_args(argv)
     domains = tuple(d for d in DOMAINS if d in a.domains.split(","))
     if not domains:
@@ -1513,11 +1783,16 @@ def main(argv=None):
     manifest = build_manifest(a.archive, a.runs, a.requirements, a.data_dir, argv)
     rsel = extract_race_selection(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
     rpred = extract_race_prediction(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
-    out = write_outputs(a.out, rows, summary, manifest, sel, sel_summary, (rsel, rpred, summarize_race(rsel, rpred)))
+    t7 = None if a.skip_t7 else extract_t7_prediction(
+        a.data_dir, specs=tuple(x for x in T7_PREDICTION if x[0] in domains))
+    out = write_outputs(a.out, rows, summary, manifest, sel, sel_summary, (rsel, rpred, summarize_race(rsel, rpred)),
+                        t7)
     print(f"prediction: {len(rows)} attempts, {sum(r['primary'] for r in rows)} in the primary metric")
     print(f"selection:  {len(sel)} attempts, {sum(r['primary'] for r in sel)} in the primary metric")
     print(f"race selection:  {len(rsel)} attempts, {sum(r['primary'] for r in rsel)} in the primary metric")
     print(f"race prediction: {len(rpred)} attempts, {sum(r['primary'] for r in rpred)} in the primary metric")
+    if t7 is not None:
+        print(f"T7 prediction:   {len(t7)} requests, {sum(r['primary'] for r in t7)} in the primary metric")
     print(f"wrote {out}")
     return 0
 

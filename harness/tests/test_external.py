@@ -462,7 +462,8 @@ class TestOutputs(unittest.TestCase):
             self.assertEqual({p.name for p in out.iterdir()},
                              {"prediction_mae.csv", "prediction_summary.csv", "prediction_report.md", "manifest.json",
                               "selection_quality.csv", "selection_summary.csv", "selection_report.md",
-                              "race_selection.csv", "race_prediction.csv", "race_summary.csv", "race_report.md"})
+                              "race_selection.csv", "race_prediction.csv", "race_summary.csv", "race_report.md",
+                              "t7_prediction.csv", "t7_prediction_report.md"})
             self.assertEqual({p: sha(p) for p in before}, before)
             with open(out / "prediction_mae.csv", newline="") as f:
                 got = list(csv.DictReader(f))
@@ -1007,6 +1008,156 @@ class TestRaceRealArchive(unittest.TestCase):
 
     def test_archive_untouched(self):
         self.assertEqual(sha(E.ARCHIVE), self.before)
+
+
+def _pycache_dirs():
+    return {str(p) for base in ("human_t7", "t7_validation", "shrinking_code") for p in (E.REPO / base).rglob("__pycache__")}
+
+
+def _tree_hashes(root):
+    return {str(p): sha(p) for p in Path(root).rglob("*") if p.is_file()}
+
+
+class TestT7Definitions(unittest.TestCase):
+    def test_adapter_discovery(self):
+        self.assertEqual([r for _, r, _, _, _ in E.T7_PREDICTION], ["NASA-03", "NASA-19", "APACHE-03", "APACHE-20"])
+        for domain, rid, step, adapter, impl in E.T7_PREDICTION:
+            src = (E.REPO / adapter).read_text()
+            self.assertTrue(adapter.startswith(f"t7_validation/adapters/{domain}/"))
+            self.assertIn(f"ANSWER {rid}", src)
+            self.assertIn(rid, E.request_ids(domain, step))
+            self.assertIn(A.REQUESTS[rid][0], ("predict", "race_predict"))
+            for f in impl:
+                self.assertTrue((E.REPO / f).is_file(), f)
+                self.assertTrue(f.startswith(f"human_t7/{domain}/"))
+                self.assertIn(Path(f).stem, src, f)            # the adapter imports this original module
+
+    def test_original_protocol_numbers_are_quoted_from_results(self):
+        for rid, (path, _, text) in E.T7_ORIGINAL.items():
+            results = (E.REPO / path).read_text()
+            for value in {"NASA": ("1,092.17", "1,031.84"), "APACHE": ("174.79", "484.05")}[rid.split("-")[0]]:
+                self.assertIn(value, results)
+                self.assertIn(value, text)
+
+    def test_identity(self):
+        self.assertIn("not an LLM trial", E.T7_IDENTITY)
+        self.assertEqual(E.T7_PREDICTION_PROTOCOL["comparison"].split(";")[0], "descriptive only")
+
+
+def _fake_runner(predict):
+    """A stand-in adapter: PREDICT(data, row) gives the NASA-03 estimate for a held-out row of the CSV it is given."""
+    from harness.checks import CheckResult
+
+    def run(adapter, csv_path, rids):
+        if predict == "crash":
+            return CheckResult(False, False, False, 0.0, "", "Traceback")
+        if predict == "timeout":
+            return CheckResult(False, False, True, 0.0, "", "timed out")
+        if predict == "badjson":
+            return CheckResult(True, False, False, 0.0, "ANSWER NASA-03 {not json}", "")
+        data = O.load(csv_path)
+        p = {str(r): predict(data, r) for r in O.held_out(data.n)}
+        mae = sum(abs(v - data.value(int(r), "Effort-")) for r, v in p.items()) / len(p)
+        return CheckResult(True, False, False, 0.0, "ANSWER NASA-03 " + json.dumps({"predictions": p, "mae": mae}), "")
+    return run
+
+
+NASA_SPEC = E.T7_PREDICTION[0]
+
+
+class TestT7Gates(unittest.TestCase):
+    def row(self, predict):
+        d, rid, step, adapter, impl = NASA_SPEC
+        return E.t7_prediction_row(d, rid, step, adapter, impl, runner=_fake_runner(predict))
+
+    def test_honest_mean_predictor(self):
+        nasa = O.load(E.DATA_DIR / "nasa93dem.csv")
+        mean = E.baseline(nasa, "Effort-")[0]
+        r = self.row(lambda data, row: mean)
+        self.assertEqual((r["leakage_gate"], r["primary"], r["beats_baseline"]), ("pass", True, False))
+        self.assertAlmostEqual(r["mae_ratio"], 1.0, places=9)
+        self.assertTrue(r["heldout_rows_match"])
+        self.assertFalse(r["is_independent_trial"])
+        self.assertEqual(r["treatment"], "T7")
+
+    def test_leaky_predictor_excluded(self):
+        r = self.row(lambda data, row: data.value(row, "Effort-"))        # copies the held-out target
+        self.assertEqual(r["model_mae"], 0)
+        self.assertEqual((r["leakage_gate"], r["primary"], r["exclusion_reason"]), ("fail", False, "leakage_failed"))
+
+    def test_failures_retained(self):
+        for kind, reason in (("crash", "execution_failure"), ("timeout", "execution_timeout"),
+                             ("badjson", "answer_invalid_json")):
+            r = self.row(kind)
+            self.assertEqual((r["exclusion_reason"], r["primary"], r["model_mae"]), (reason, False, ""), kind)
+            self.assertEqual(r["request_id"], "NASA-03")
+
+    def test_rejects_non_prediction_request(self):
+        with self.assertRaises(ValueError):
+            E.t7_prediction_row("nasa", "NASA-20", 10, NASA_SPEC[3], NASA_SPEC[4], runner=_fake_runner("crash"))
+
+
+class TestT7Prediction(unittest.TestCase):
+    """Runs the real NASA and Apache adapters (offline, deterministic, no LLM)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pycache = _pycache_dirs()
+        cls.frozen = _tree_hashes(E.FROZEN_DIR)
+        cls.t7_sources = {f: sha(E.REPO / f) for _, _, _, a, i in E.T7_PREDICTION for f in (a, *i)}
+        cls.rows = E.extract_t7_prediction()
+        cls.again = E.extract_t7_prediction()
+        cls.by = {r["request_id"]: r for r in cls.rows}
+
+    def test_one_record_per_request(self):
+        self.assertEqual(len(self.rows), 4)
+        self.assertEqual(set(self.by), {"NASA-03", "NASA-19", "APACHE-03", "APACHE-20"})
+        for r in self.rows:
+            self.assertEqual(r["treatment"], "T7")
+            self.assertFalse(r["is_independent_trial"])
+            self.assertEqual(r["protocol"], E.T7_PROTOCOL)
+
+    def test_heldout_alignment_and_baseline(self):
+        for r in self.rows:
+            data = O.load(E.DATA_DIR / E.DATASETS[r["domain"]])
+            mean, base, held = E.baseline(data, r["target"])
+            self.assertTrue(r["heldout_rows_match"])
+            self.assertEqual((r["n_heldout"], r["n_training"]), (len(held), data.n - len(held)))
+            self.assertEqual((r["baseline_mean"], r["baseline_mae"]), (mean, base))
+            self.assertEqual(r["target"], A.REQUESTS[r["request_id"]][1]["target"])
+        self.assertEqual(self.by["NASA-03"]["n_heldout"], 18)
+        self.assertEqual(self.by["APACHE-03"]["n_heldout"], 38)
+
+    def test_mae_recomputed_from_adapter_output(self):
+        for domain, rid, step, adapter, impl in E.T7_PREDICTION:
+            csv_path = E.DATA_DIR / E.DATASETS[domain]
+            out = E.run_adapter(adapter, csv_path, E.request_ids(domain, step)).stdout
+            preds = A.parse_answers(out)[rid]["predictions"]
+            data = O.load(csv_path)
+            target = A.REQUESTS[rid][1]["target"]
+            mae = sum(abs(float(v) - data.value(int(k), target)) for k, v in preds.items()) / len(preds)
+            self.assertAlmostEqual(self.by[rid]["model_mae"], mae, places=9)
+            self.assertAlmostEqual(self.by[rid]["mae_ratio"], mae / self.by[rid]["baseline_mae"], places=12)
+            self.assertTrue(self.by[rid]["reported_mae_matches"])
+
+    def test_gates(self):
+        for r in self.rows:
+            self.assertEqual(r["answer_state"], "valid")
+            self.assertIn(r["leakage_gate"], ("pass", "fail", "unverified"))
+            self.assertEqual(r["primary"], r["leakage_gate"] == "pass")
+            self.assertIn("mask", r["rerun_outcomes"])
+            self.assertIn("shuffled", r["rerun_outcomes"])
+
+    def test_reproducible(self):
+        self.assertEqual(self.rows, self.again)
+
+    def test_evidence_isolated(self):
+        self.assertFalse((E.REPO / "t7_validation" / "results").exists())
+        self.assertEqual(_pycache_dirs(), self.pycache)
+        self.assertEqual({f: sha(E.REPO / f) for f in self.t7_sources}, self.t7_sources)
+
+    def test_frozen_results_untouched(self):
+        self.assertEqual(_tree_hashes(E.FROZEN_DIR), self.frozen)
 
 
 if __name__ == "__main__":

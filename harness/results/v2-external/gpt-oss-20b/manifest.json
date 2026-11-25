@@ -1,7 +1,7 @@
 {
-  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; phase 3: Race (guided vs random selection, model vs historical-mean prediction)",
+  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; phase 3: Race (guided vs random selection, model vs historical-mean prediction); phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters",
   "status": "post-observation (added after the Task Talk; not pre-registered)",
-  "generated_utc": "2026-11-25T05:49:17+00:00",
+  "generated_utc": "2026-11-25T06:28:18+00:00",
   "command": "python -m harness.external",
   "model": "gpt-oss-20b",
   "protocol": {
@@ -100,6 +100,57 @@
         "primary_inclusion": "program ran; schema valid; mask leakage rerun passed",
         "separate_from_phase1": "the Guess request (skill 2) and the Race request (skill 10) are never pooled"
       }
+    },
+    "t7_prediction": {
+      "identity": "T7: one human-directed implementation per domain; deterministic; not an LLM trial",
+      "protocol": "v2-common: every-fifth-row hold-out, training-mean baseline (t7_validation adapter)",
+      "requests": {
+        "NASA-03": {
+          "domain": "nasa",
+          "step": 2,
+          "adapter": "t7_validation/adapters/nasa/guess.py",
+          "implementation": [
+            "human_t7/nasa/remember.py",
+            "human_t7/nasa/guess.py"
+          ]
+        },
+        "NASA-19": {
+          "domain": "nasa",
+          "step": 10,
+          "adapter": "t7_validation/adapters/nasa/race.py",
+          "implementation": [
+            "human_t7/nasa/remember.py",
+            "human_t7/nasa/guess.py",
+            "human_t7/nasa/choose.py",
+            "human_t7/nasa/race.py"
+          ]
+        },
+        "APACHE-03": {
+          "domain": "apache",
+          "step": 2,
+          "adapter": "t7_validation/adapters/apache/guess.py",
+          "implementation": [
+            "human_t7/apache/remember.py",
+            "human_t7/apache/guess.py"
+          ]
+        },
+        "APACHE-20": {
+          "domain": "apache",
+          "step": 10,
+          "adapter": "t7_validation/adapters/apache/race.py",
+          "implementation": [
+            "human_t7/apache/remember.py",
+            "human_t7/apache/guess.py",
+            "human_t7/apache/choose.py",
+            "human_t7/apache/race.py"
+          ]
+        }
+      },
+      "execution": "each adapter is run locally with the current Python (-B, PYTHONDONTWRITEBYTECODE=1) on the domain CSV; harness.semantic.evaluate reruns it on its shuffled, mask and (Race) honeypot copies in temporary directories; evidence is kept in memory and hashed, never written to t7_validation/results",
+      "scoring": "same functions as phases 1 and 3: baseline, model_mae, mae_ratio on harness.oracle.held_out rows",
+      "inclusion": "same as T1-T6: ran; ANSWER accepted by harness.answers.check_request; mask leakage rerun passed",
+      "comparison": "descriptive only; T7 is n = 1 per domain, so same()/bestRanks are not applied",
+      "development_note": "the T7 adapters were written and refined against the common semantic checker; T1-T6 programs were generated one-shot without access to it"
     }
   },
   "inputs": {
@@ -142,8 +193,8 @@
     "code": {
       "external": {
         "path": "harness/external.py",
-        "sha256": "e5b96329559891e3961521f6938295646b402fa9be842739bfb2aa077274e580",
-        "bytes": 85741
+        "sha256": "e012f0a16ca1556a660dd1e72e65a77782297f722dfded5c46e391aa3defe348",
+        "bytes": 103045
       },
       "answers": {
         "path": "harness/answers.py",
@@ -160,10 +211,72 @@
         "sha256": "cc27d86f3106126adb1253912fb6461fd54d5caf4ca41e6efc5f4e8d09e10ec6",
         "bytes": 9183
       }
+    },
+    "t7_sources": {
+      "human_t7/apache/choose.py": {
+        "path": "human_t7/apache/choose.py",
+        "sha256": "6d77b8004ebd8c564f1ffd3d16c68b90662fe2e92142e4dbca4cb16ba8c7be4d",
+        "bytes": 6684
+      },
+      "human_t7/apache/guess.py": {
+        "path": "human_t7/apache/guess.py",
+        "sha256": "9df5f421128f08a2619a59b0c794757369881efd7bd695263a17f60ab0e9efc3",
+        "bytes": 7294
+      },
+      "human_t7/apache/race.py": {
+        "path": "human_t7/apache/race.py",
+        "sha256": "81dd1f97a4eb743225121eadd97a9635f89313f9edfb914804c70e73bfc64176",
+        "bytes": 8592
+      },
+      "human_t7/apache/remember.py": {
+        "path": "human_t7/apache/remember.py",
+        "sha256": "24d926b9c64b3973c17fb793cc316e04b6ba0c19fce3bd1946f90b2e5913c4d9",
+        "bytes": 6259
+      },
+      "human_t7/nasa/choose.py": {
+        "path": "human_t7/nasa/choose.py",
+        "sha256": "69468280c045bc59026f2766d23eee0c919872f07f3231f373ffef7e7d801918",
+        "bytes": 4679
+      },
+      "human_t7/nasa/guess.py": {
+        "path": "human_t7/nasa/guess.py",
+        "sha256": "4bae3547d5a6be013f0b8178469717a91e71c00abe7ca6de36465759cdb79c36",
+        "bytes": 3843
+      },
+      "human_t7/nasa/race.py": {
+        "path": "human_t7/nasa/race.py",
+        "sha256": "5dffef1212e8a46cac0bf5e3d09852a267e816db1f767c595aa9fe8db7810f31",
+        "bytes": 5771
+      },
+      "human_t7/nasa/remember.py": {
+        "path": "human_t7/nasa/remember.py",
+        "sha256": "1fcde3ea2f33afbb86fd2f0e24eb9a734fc76e7b387b770cf0c2ad17a5a402e0",
+        "bytes": 4381
+      },
+      "t7_validation/adapters/apache/guess.py": {
+        "path": "t7_validation/adapters/apache/guess.py",
+        "sha256": "6447cf1075cdcb50e5a265124659ea6f56484d81b03596a1f6f62146de180d70",
+        "bytes": 3485
+      },
+      "t7_validation/adapters/apache/race.py": {
+        "path": "t7_validation/adapters/apache/race.py",
+        "sha256": "dfc17fb0beb0289178799b819c88f406ec0a1124b5a01e2888f241ec5a5b818f",
+        "bytes": 4807
+      },
+      "t7_validation/adapters/nasa/guess.py": {
+        "path": "t7_validation/adapters/nasa/guess.py",
+        "sha256": "15c414641160235381cf2552de98fee096dc702c7028e81190a017cfc2474121",
+        "bytes": 3361
+      },
+      "t7_validation/adapters/nasa/race.py": {
+        "path": "t7_validation/adapters/nasa/race.py",
+        "sha256": "85db88283dcc4bccdff2a0b657217dc44f1e9d39a691463806093e1c4a881f96",
+        "bytes": 6360
+      }
     }
   },
   "git": {
-    "commit": "1318303c4841a311877ae6b38dfeef558bcec05f",
+    "commit": "b986524c3fa050ce9b4c7c808687847804dbafa4",
     "branch": "analysis/external-metrics",
     "dirty": true
   },
@@ -180,7 +293,7 @@
       "sha256": "bfdf4537a3c13346996dbd2b9c6499ec6e5da58424e4827ca37ee7b8a7b222cd"
     },
     "prediction_report.md": {
-      "sha256": "e0c5f78bb428279ed62c56da70977cf4c6fb6fa0753534c58daa23af834976ed"
+      "sha256": "26772c3080211fbba699081c61f278b3d55c787f500ebe4d647f2af7105b05d2"
     },
     "selection_quality.csv": {
       "sha256": "35479bc46e332515390b91ffe682fe249924012c89835ab9633f249db6a65dda"
@@ -189,7 +302,7 @@
       "sha256": "3ecb40ca54175f50950b4ed8150d1ef79bf83a3eaded5591c8f59596f90fcfb0"
     },
     "selection_report.md": {
-      "sha256": "870d93d6f05e0ca763e388f4388d24f0d3cfbd333fb998f1c302221e7661882c"
+      "sha256": "9cc72795e9ceeb2a79774ee09129b25b5b9e6082265a0ce70bab64f23817d705"
     },
     "race_selection.csv": {
       "sha256": "48487d69d56add1df70a6fd99aba8f5b56da4d4a272d9824fd6227f8bf08ca31"
@@ -201,7 +314,13 @@
       "sha256": "97b8d2880665321a8aa278ebd11e4b12d2dc546e3291fd87a1bae7cc6d0cc9b9"
     },
     "race_report.md": {
-      "sha256": "35a5b138e388d4710290ea397e376f09a7bc5b75e9267ab0edbbc807830a9b8c"
+      "sha256": "c72905d0937a9f1d073dc0ef0c0d1286ed0283cdd0109f02bd2049078ed7af6c"
+    },
+    "t7_prediction.csv": {
+      "sha256": "2bc58ed1c1a4a45ef899758c7ae7935fca19ce8f3ca25c2577feb23c6bacfb41"
+    },
+    "t7_prediction_report.md": {
+      "sha256": "2db78c73c640c6fb1d735e9a1a5cb6cf796b42c78531bd122e2fdd270a6277ea"
     }
   }
 }
