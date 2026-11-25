@@ -83,6 +83,7 @@ REASONS = (
     "baseline_zero",            # baseline MAE is 0, so the ratio is undefined
     "honeypot_failed",          # honeypot rerun: planted ideal rows were picked within the budget (peeking)
     "honeypot_unverified",      # honeypot rerun crashed, timed out, gave no valid answer, or never ran
+    "budget_mismatch",          # race_select: the reported budget is not the frozen oracle budget
 )
 
 CSV_FIELDS = [
@@ -591,6 +592,303 @@ def summarize_selection(rows):
     return out
 
 
+# ---- phase 3: Race (race_select and race_predict, skill 10) -------------------------
+
+RACE_STEP = 10
+# NASA lists its two Race requests in the opposite order to Cars and Apache (docs/requirements_nasa.md).
+RACE = {
+    "cars": {"select": "CAR-19", "predict": "CAR-20"},
+    "nasa": {"select": "NASA-20", "predict": "NASA-19"},
+    "apache": {"select": "APACHE-19", "predict": "APACHE-20"},
+}
+
+
+def check_failed(sem, request_id, prefix):
+    """First failed-check text of REQUEST_ID that starts with PREFIX (e.g. 'base:verdict follows'), else ''."""
+    req = next((r for r in sem.get("requests", []) if r.get("request_id") == request_id), None)
+    if req is None:
+        return ""
+    return next((f[:200] for f in req.get("failed", []) if f.startswith(prefix)), "")
+
+
+def race_selection_metrics(scores, ours, rand, budget):
+    """Score a recorded race_select answer: OURS[i] and RAND[i] are the best rows found by the guided
+    and the random arm in repeat i. Lower d2h is better. Repeats are summarised within the trial."""
+    if len(ours) != len(rand) or not ours:
+        raise ValueError("ours and random must have one row per repeat")
+    g = [scores[r] for r in ours]
+    x = [scores[r] for r in rand]
+    wins = sum(a < b for a, b in zip(g, x))
+    ties = sum(a == b for a, b in zip(g, x))
+    n = len(g)
+    exp_rand = expected_random_best(list(scores.values()), budget)
+    mg, mr = O.median(g), O.median(x)
+    return {
+        "n_repeats": n, "median_guided_d2h": mg, "median_random_d2h": mr, "median_advantage": mr - mg,
+        "mean_guided_d2h": O.mean(g), "mean_random_d2h": O.mean(x),
+        "guided_wins": wins, "ties": ties, "random_wins": n - wins - ties,
+        "win_fraction": wins / n, "tie_fraction": ties / n,
+        "expected_random_best": exp_rand, "advantage_vs_analytic": exp_rand - mg,
+        "random_arm_vs_analytic": O.mean(x) - exp_rand,
+        "median_guided_regret": mg - min(scores.values()),
+    }
+
+
+RACE_SELECTION_FIELDS = [
+    "model", "domain", "treatment", "trial", "skill_index", "request_id",
+    "step_status", "step_runs", "step_semantic", "request_status",
+    "check_runs", "check_timed_out", "answer_state", "answer_detail",
+    "honeypot_gate", "honeypot_detail", "random_arm_gate", "random_arm_detail", "verdict_gate", "shuffled_gate",
+    "n_candidates", "budget", "reported_budget", "budget_matches", "n_repeats",
+    "median_guided_d2h", "median_random_d2h", "median_advantage", "mean_guided_d2h", "mean_random_d2h",
+    "guided_wins", "ties", "random_wins", "win_fraction", "tie_fraction",
+    "expected_random_best", "advantage_vs_analytic", "random_arm_vs_analytic",
+    "pool_best_d2h", "median_guided_regret", "reported_verdict",
+    "beats_random_analytic", "beats_random_empirical",
+    "primary", "empirical_primary", "exclusion_reason", "notes",
+    "check_entry", "check_crc32", "check_sha256", "semantic_entry", "semantic_sha256",
+]
+
+RACE_PREDICTION_FIELDS = [
+    "model", "domain", "treatment", "trial", "skill_index", "request_id", "target", "target_direction",
+    "step_status", "step_runs", "step_semantic", "request_status",
+    "check_runs", "check_timed_out", "answer_state", "answer_detail",
+    "leakage_gate", "leakage_detail", "verdict_gate", "shuffled_gate",
+    "n_heldout", "model_mae", "baseline_mean", "baseline_mae", "mae_ratio", "mae_advantage", "beats_baseline",
+    "rows_model_better", "rows_model_better_frac",
+    "reported_baseline", "reported_baseline_matches", "reported_mae_model", "reported_mae_model_matches",
+    "reported_mae_baseline", "reported_mae_baseline_matches", "reported_verdict",
+    "primary", "exclusion_reason",
+    "check_entry", "check_crc32", "check_sha256", "semantic_entry", "semantic_sha256",
+]
+
+RACE_PROTOCOL = {
+    "requests": {d: dict(v, step=RACE_STEP) for d, v in RACE.items()},
+    "note": "NASA-19 is the prediction race and NASA-20 the selection race; Cars and Apache are the other way round",
+    "selection": {
+        "answer": "{\"budget\": b, \"repeats\": >= 20, \"ours\": [best row per repeat], \"random\": [best of b random "
+                  "rows per repeat], \"verdict\": ...}; schema validated by harness.answers.check_request",
+        "score": "harness.oracle.d2h over all rows of the CSV (lower is better)",
+        "empirical": "archived per-repeat rows of both arms: medians, median_advantage = median random d2h - median "
+                     "guided d2h (positive = guided better), win_fraction = repeats where guided d2h < random d2h "
+                     "(pairs taken by repeat index as recorded)",
+        "analytical": "expected_random_best = exact expected best d2h of `budget` rows drawn uniformly without "
+                      "replacement from all rows; advantage_vs_analytic = expected_random_best - median guided d2h",
+        "primary_inclusion": "program ran; schema valid; honeypot rerun passed; reported budget == "
+                             "harness.oracle.budget(n)",
+        "empirical_inclusion": "primary and the frozen check 'random baseline is really random' passed on the base run",
+        "delivered": "primary and advantage_vs_analytic > 0 (analysis choice)",
+        "unverifiable": "the rows each arm evaluated are not archived, so it cannot be checked that `ours` and "
+                        "`random` are really the best of what each arm saw",
+    },
+    "prediction": {
+        "metric": "same definitions as phase 1 (every-fifth-row hold-out, training-mean baseline, mae_ratio)",
+        "verification": "model and baseline MAE recomputed from the recorded predictions and the CSV; the program's "
+                        "reported baseline, mae_model and mae_baseline are compared (rel. 0.5%, 1%, 1% as the frozen "
+                        "checker does) but never used",
+        "primary_inclusion": "program ran; schema valid; mask leakage rerun passed",
+        "separate_from_phase1": "the Guess request (skill 2) and the Race request (skill 10) are never pooled",
+    },
+}
+
+
+def _race_attempts(archive, runs_csv, requirements_csv, data_dir, model, domains, kind, make_row):
+    runs = _index(runs_csv, ("model", "domain", "treatment", "trial", "skill_index"))
+    reqs = _index(requirements_csv, ("model", "domain", "treatment", "trial", "request_id"))
+    rows = []
+    with zipfile.ZipFile(archive) as z:
+        names = set(z.namelist())
+        root = archive_root(names, model)
+        for domain in domains:
+            rid = RACE[domain][kind]
+            want = {"select": "race_select", "predict": "race_predict"}[kind]
+            if rid not in request_ids(domain, RACE_STEP) or A.REQUESTS[rid][0] != want:
+                raise ValueError(f"{rid} is not the frozen {want} request")
+            data = O.load(Path(data_dir) / DATASETS[domain])
+            for t in TREATMENTS:
+                for k in TRIALS:
+                    rows.append(make_row(z, names, root, model, domain, t, k, rid, data, runs, reqs))
+    keys = [(r["domain"], r["treatment"], r["trial"]) for r in rows]
+    if len(keys) != len(set(keys)):
+        raise ValueError("duplicate trial records")
+    return rows
+
+
+def _race_selection_row(z, names, root, model, domain, t, k, rid, data, runs, reqs):
+    scores = O.d2h(data)
+    budget = O.budget(data.n)
+    row, ctx, ans, sem = _attempt(
+        z, names, root, model, domain, t, k, RACE_STEP, rid, data, runs, reqs, RACE_SELECTION_FIELDS,
+        dict(n_candidates=data.n, budget=budget, pool_best_d2h=min(scores.values()),
+             expected_random_best=expected_random_best(list(scores.values()), budget),
+             honeypot_gate="not_run", random_arm_gate="not_run", verdict_gate="not_run", shuffled_gate="not_run",
+             empirical_primary=False))
+    if ctx is None:
+        return row
+    ours = A.rows(data, A.need(ans, "ours", "list"), "ours", distinct=False)     # the checker's own reading
+    rand = A.rows(data, A.need(ans, "random", "list"), "random", distinct=False)
+    rb = A.num(A.need(ans, "budget"))
+    m = race_selection_metrics(scores, ours, rand, budget)
+    row.update(m)
+    row.update(reported_budget=rb, budget_matches=rb == budget, reported_verdict=ans.get("verdict", ""),
+               beats_random_analytic=m["advantage_vs_analytic"] > 0, beats_random_empirical=m["median_advantage"] > 0)
+    gate, detail = honeypot_gate(sem, rid)
+    arm = check_failed(sem, rid, "base:random baseline is really random")
+    verdict = check_failed(sem, rid, "base:verdict follows from the results")
+    row.update(honeypot_gate=gate, honeypot_detail=detail, shuffled_gate=shuffled_gate(sem, rid),
+               random_arm_gate="fail" if arm else "pass", random_arm_detail=arm,
+               verdict_gate="fail" if verdict else "pass")
+    if gate == "fail":
+        row["exclusion_reason"] = "honeypot_failed"
+    elif gate != "pass":
+        row["exclusion_reason"] = "honeypot_unverified"
+    elif rb != budget:
+        row["exclusion_reason"] = "budget_mismatch"
+    else:
+        row["primary"] = True
+        row["empirical_primary"] = not arm
+    if row["primary"] and arm:
+        row["notes"] = "random arm failed the frozen plausibility check: excluded from the empirical comparison"
+    return row
+
+
+def _race_prediction_row(z, names, root, model, domain, t, k, rid, data, runs, reqs):
+    target = A.REQUESTS[rid][1]["target"]
+    direction = dict(data.goals())[target]
+    base_mean, base_mae, held = baseline(data, target)
+    row, ctx, ans, sem = _attempt(
+        z, names, root, model, domain, t, k, RACE_STEP, rid, data, runs, reqs, RACE_PREDICTION_FIELDS,
+        dict(target=target, target_direction=direction, baseline_mean=base_mean, baseline_mae=base_mae,
+             n_heldout=len(held), leakage_gate="not_run", verdict_gate="not_run", shuffled_gate="not_run"))
+    if ctx is None:
+        return row
+    preds = A._heldout_preds(ctx)
+    mae = model_mae(data, target, preds)
+    ratio, why = mae_ratio(mae, base_mae)
+    better = sum(abs(preds[r] - data.value(r, target)) < abs(base_mean - data.value(r, target)) for r in held)
+    rep_b, rep_m, rep_mb = (A.num(A.need(ans, key)) for key in ("baseline", "mae_model", "mae_baseline"))
+    row.update(model_mae=mae, mae_ratio="" if ratio is None else ratio, mae_advantage=base_mae - mae,
+               beats_baseline="" if ratio is None else mae < base_mae,
+               rows_model_better=better, rows_model_better_frac=better / len(held),
+               reported_baseline=rep_b, reported_baseline_matches=O.close(rep_b, base_mean, rel=0.005),
+               reported_mae_model=rep_m, reported_mae_model_matches=O.close(rep_m, mae, rel=0.01),
+               reported_mae_baseline=rep_mb, reported_mae_baseline_matches=O.close(rep_mb, base_mae, rel=0.01),
+               reported_verdict=ans.get("verdict", ""))
+    gate, detail = leakage_gate(sem, rid, target)
+    verdict = check_failed(sem, rid, "base:verdict follows from the errors")
+    row.update(leakage_gate=gate, leakage_detail=detail, shuffled_gate=shuffled_gate(sem, rid),
+               verdict_gate="fail" if verdict else "pass")
+    if gate == "fail":
+        row["exclusion_reason"] = "leakage_failed"
+    elif gate != "pass":
+        row["exclusion_reason"] = "leakage_unverified"
+    elif why:
+        row["exclusion_reason"] = why
+    else:
+        row["primary"] = True
+    return row
+
+
+def extract_race_selection(archive=ARCHIVE, runs_csv=RUNS_CSV, requirements_csv=REQUIREMENTS_CSV, data_dir=DATA_DIR,
+                           model=MODEL, domains=DOMAINS):
+    return _race_attempts(archive, runs_csv, requirements_csv, data_dir, model, domains, "select",
+                          _race_selection_row)
+
+
+def extract_race_prediction(archive=ARCHIVE, runs_csv=RUNS_CSV, requirements_csv=REQUIREMENTS_CSV, data_dir=DATA_DIR,
+                            model=MODEL, domains=DOMAINS):
+    return _race_attempts(archive, runs_csv, requirements_csv, data_dir, model, domains, "predict",
+                          _race_prediction_row)
+
+
+RACE_SUMMARY_FIELDS = [
+    "metric", "scope", "domain", "treatment", "request_id",
+    "attempted", "generation_failed", "execution_failed", "answer_missing", "answer_invalid_json",
+    "answer_schema_error", "schema_valid", "gate_failed", "gate_unverified", "budget_mismatch",
+    "primary_n", "primary_rate", "beats_n", "conditional_beat_rate", "delivery_rate",
+    # selection
+    "budget", "expected_random_best", "median_guided_d2h", "median_random_d2h", "median_advantage",
+    "median_win_fraction", "median_advantage_vs_analytic", "empirical_n", "empirical_beats_n",
+    # prediction
+    "baseline_mae", "median_model_mae", "median_mae_ratio", "min_mae_ratio", "max_mae_ratio", "median_mae_advantage",
+]
+
+
+def _race_counts(sel, gate_fail, gate_unv):
+    reasons = [r["exclusion_reason"] for r in sel]
+    return {
+        "attempted": len(sel),
+        "generation_failed": reasons.count("generation_failed") + reasons.count("not_attempted"),
+        "execution_failed": reasons.count("execution_failure") + reasons.count("execution_timeout"),
+        "answer_missing": reasons.count("answer_missing"),
+        "answer_invalid_json": reasons.count("answer_invalid_json"),
+        "answer_schema_error": reasons.count("answer_schema_error"),
+        "schema_valid": sum(r["answer_state"] == "valid" for r in sel),
+        "gate_failed": reasons.count(gate_fail), "gate_unverified": reasons.count(gate_unv),
+        "budget_mismatch": reasons.count("budget_mismatch"),
+    }
+
+
+def _one(values):
+    vals = {v for v in values}
+    return vals.pop() if len(vals) == 1 else ""
+
+
+def _race_sel_cell(scope, domain, treatment, rid, sel):
+    prim = [r for r in sel if r["primary"]]
+    emp = [r for r in prim if r["empirical_primary"]]
+    beats = sum(bool(r["beats_random_analytic"]) for r in prim)
+    out = {f: "" for f in RACE_SUMMARY_FIELDS}
+    out.update(metric="selection", scope=scope, domain=domain, treatment=treatment, request_id=rid)
+    out.update(_race_counts(sel, "honeypot_failed", "honeypot_unverified"))
+    out.update(primary_n=len(prim), primary_rate=_rate(len(prim), len(sel)), beats_n=beats,
+               conditional_beat_rate=_rate(beats, len(prim)), delivery_rate=_rate(beats, len(sel)),
+               budget=_one(r["budget"] for r in sel), expected_random_best=_one(r["expected_random_best"] for r in sel),
+               median_guided_d2h=_med([r["median_guided_d2h"] for r in prim]),
+               median_advantage_vs_analytic=_med([r["advantage_vs_analytic"] for r in prim]),
+               empirical_n=len(emp), empirical_beats_n=sum(bool(r["beats_random_empirical"]) for r in emp),
+               median_random_d2h=_med([r["median_random_d2h"] for r in emp]),
+               median_advantage=_med([r["median_advantage"] for r in emp]),
+               median_win_fraction=_med([r["win_fraction"] for r in emp]))
+    return out
+
+
+def _race_pred_cell(scope, domain, treatment, rid, sel):
+    prim = [r for r in sel if r["primary"]]
+    ratios = [r["mae_ratio"] for r in prim]
+    beats = sum(bool(r["beats_baseline"]) for r in prim)
+    out = {f: "" for f in RACE_SUMMARY_FIELDS}
+    out.update(metric="prediction", scope=scope, domain=domain, treatment=treatment, request_id=rid)
+    out.update(_race_counts(sel, "leakage_failed", "leakage_unverified"))
+    out.update(primary_n=len(prim), primary_rate=_rate(len(prim), len(sel)), beats_n=beats,
+               conditional_beat_rate=_rate(beats, len(prim)), delivery_rate=_rate(beats, len(sel)),
+               baseline_mae=_one(r["baseline_mae"] for r in sel),
+               median_model_mae=_med([r["model_mae"] for r in prim]),
+               median_mae_ratio=_med(ratios), min_mae_ratio=min(ratios) if ratios else "",
+               max_mae_ratio=max(ratios) if ratios else "",
+               median_mae_advantage=_med([r["mae_advantage"] for r in prim]))
+    return out
+
+
+def summarize_race(sel_rows, pred_rows):
+    out = []
+    for kind, rows, cell in (("select", sel_rows, _race_sel_cell), ("predict", pred_rows, _race_pred_cell)):
+        for d in DOMAINS:
+            for t in TREATMENTS:
+                s = [r for r in rows if r["domain"] == d and r["treatment"] == t]
+                if s:
+                    out.append(cell("domain_treatment", d, t, RACE[d][kind], s))
+        for d in DOMAINS:
+            s = [r for r in rows if r["domain"] == d]
+            if s:
+                out.append(cell("domain", d, "all", RACE[d][kind], s))
+        for t in TREATMENTS:
+            s = [r for r in rows if r["treatment"] == t]
+            if s:
+                out.append(cell("treatment_all_domains", "all", t, "race_" + kind, s))
+    return out
+
+
 # ---- summaries ---------------------------------------------------------------------
 
 def _rate(a, b):
@@ -817,7 +1115,8 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
             copies[name] = (inside in z.namelist()
                             and _sha(z.read(inside)) == _sha(Path(path).read_bytes()))
     return {
-        "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget",
+        "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; "
+                    "phase 3: Race (guided vs random selection, model vs historical-mean prediction)",
         "status": "post-observation (added after the Task Talk; not pre-registered)",
         "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "command": "python -m harness.external" + (" " + " ".join(argv) if argv else ""),
@@ -835,6 +1134,7 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
             "llm_calls": 0,
             "programs_rerun": 0,
             "selection": SELECTION_PROTOCOL,
+            "race": RACE_PROTOCOL,
         },
         "inputs": {
             "archive": _file_info(archive),
@@ -996,7 +1296,174 @@ def selection_report(rows, summary, manifest):
     return "\n".join(lines)
 
 
-def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=None):
+def race_report(sel_rows, pred_rows, summary, manifest):
+    cells = lambda metric: [s for s in summary if s["metric"] == metric and s["scope"] == "domain_treatment"]
+    lines = [
+        "# External metric, phase 3: Race — guided vs random selection, model vs historical-mean prediction",
+        "",
+        "**Status: post-observation analysis.** These metrics were added after the Task Talk, after the v2 "
+        "T1–T6 results had been seen. They are not part of the pre-registered plan in `docs/hypotheses.md` "
+        "and do not change its win conditions.",
+        "",
+        "## Requests",
+        "",
+        "Race is skill 10. Each attempted step holds two requests, and NASA numbers them the other way round:",
+        "",
+        "| domain | selection race | prediction race |",
+        "|---|---|---|",
+    ]
+    lines += [f"| {d} | {RACE[d]['select']} | {RACE[d]['predict']} |" for d in DOMAINS]
+    lines += [
+        "",
+        "The prediction race is kept separate from the phase 1 Guess metric (CAR-03, NASA-03, APACHE-03), "
+        "even where the target and the trial are the same.",
+        "",
+        "## A. Guided vs random selection",
+        "",
+        "**Recorded answer:** `{\"budget\", \"repeats\", \"ours\": [best row per repeat], \"random\": [best of "
+        "`budget` random rows per repeat], \"verdict\"}`. Every row is scored with the frozen `harness.oracle.d2h` "
+        "(lower is better). Two comparisons are reported, and they are different kinds of evidence:",
+        "",
+        "- **Empirical (archived repeats):** median d2h of each arm over the program's own repeats (20 in every "
+        "valid answer); *median advantage* = median random − median guided (positive = guided better); *win "
+        "fraction* = share of repeats where the guided row has lower d2h than the random row of the same repeat "
+        "index. This relies on the program's random arm, so it is used only when the frozen check \"random "
+        "baseline is really random\" passed.",
+        "- **Analytical:** the exact expected best d2h of `budget` rows drawn uniformly at random from the whole "
+        "CSV, computed in closed form; *advantage vs analytical* = that expectation − the median guided d2h. This "
+        "does not depend on the program's random arm.",
+        "",
+        "Repeats are summarised within each trial; they are never counted as LLM trials. The archive records only "
+        "the best row of each repeat, not the rows each arm evaluated, so it cannot be checked that those rows "
+        "really are the best each arm saw.",
+        "",
+        "**Primary:** the program ran, the answer passed the frozen format check, the honeypot rerun passed (no "
+        "budget peeking) and the reported budget equals the frozen budget. **Delivered** = primary and advantage "
+        "vs analytical > 0 (analysis choice), over all 3 attempted trials.",
+        "",
+        "| domain | T | budget | attempted | exec. failed | bad answer | schema valid | honeypot failed | "
+        "honeypot unverified | primary n | median guided d2h | analytical random best | median advantage vs "
+        "analytical | empirical n | median random-arm d2h | median advantage (empirical) | median win fraction "
+        "| delivery rate |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for s in cells("selection"):
+        bad = s["answer_missing"] + s["answer_invalid_json"] + s["answer_schema_error"]
+        lines.append(
+            f"| {s['domain']} | {s['treatment']} | {s['budget']} | {s['attempted']} | "
+            f"{s['execution_failed'] + s['generation_failed']} | {bad} | {s['schema_valid']} | {s['gate_failed']} | "
+            f"{s['gate_unverified']} | {s['primary_n']} | {_num(s['median_guided_d2h'])} | "
+            f"{_num(s['expected_random_best'])} | {_num(s['median_advantage_vs_analytic'], '+.3f')} | "
+            f"{s['empirical_n']} | {_num(s['median_random_d2h'])} | {_num(s['median_advantage'], '+.3f')} | "
+            f"{_num(s['median_win_fraction'], '.2f')} | {_pct(s['delivery_rate'])} |")
+    lines += ["", "\"exec. failed\" includes steps that produced no program (`parse_failed`).", "",
+              "### By domain", "",
+              "| domain | request | attempted | schema valid | honeypot failed | primary n | median advantage vs "
+              "analytical | delivery rate |", "|---|---|---:|---:|---:|---:|---:|---:|"]
+    for s in [s for s in summary if s["metric"] == "selection" and s["scope"] == "domain"]:
+        lines.append(f"| {s['domain']} | {s['request_id']} | {s['attempted']} | {s['schema_valid']} | "
+                     f"{s['gate_failed']} | {s['primary_n']} | {_num(s['median_advantage_vs_analytic'], '+.3f')} | "
+                     f"{_pct(s['delivery_rate'])} |")
+    valid = [r for r in sel_rows if r["answer_state"] == "valid"]
+    peek = [r for r in valid if r["honeypot_gate"] == "fail"]
+    lines += ["", "### Budget peeking", "",
+              f"{len(peek)} of the {len(valid)} schema-valid selection answers failed the honeypot check and are "
+              "excluded. For context only (these values do not measure honest selection):", "",
+              "| domain | schema valid | honeypot failed | median advantage vs analytical, excluded | median advantage "
+              "vs analytical, primary |", "|---|---:|---:|---:|---:|"]
+    for d in DOMAINS:
+        v = [r for r in valid if r["domain"] == d]
+        if v:
+            ex = [r for r in v if r["honeypot_gate"] == "fail"]
+            pr = [r for r in v if r["primary"]]
+            lines.append(f"| {d} | {len(v)} | {len(ex)} | "
+                         f"{_num(_med([r['advantage_vs_analytic'] for r in ex]), '+.3f')} | "
+                         f"{_num(_med([r['advantage_vs_analytic'] for r in pr]), '+.3f')} |")
+    arm = [r for r in valid if r["random_arm_gate"] == "fail"]
+    lines += ["", "### Is the programs' random arm really random?", "",
+              f"{len(arm)} of the {len(valid)} schema-valid answers failed the frozen check \"random baseline is really "
+              "random\". The table compares each program's random arm (mean d2h of its recorded best-of-budget rows) "
+              "with the exact expectation for uniform random sampling. A gap far from 0 means the reported random "
+              "arm is not plain best-of-budget random sampling scored by d2h.", "",
+              "| domain | schema valid | analytical random best | median of the programs' random-arm mean d2h | "
+              "median gap | min–max gap |", "|---|---:|---:|---:|---:|---|"]
+    for d in DOMAINS:
+        v = [r for r in valid if r["domain"] == d]
+        if v:
+            gaps = [r["random_arm_vs_analytic"] for r in v]
+            lines.append(f"| {d} | {len(v)} | {_num(v[0]['expected_random_best'])} | "
+                         f"{_num(_med([r['mean_random_d2h'] for r in v]))} | {_num(_med(gaps), '+.3f')} | "
+                         f"{min(gaps):+.3f}–{max(gaps):+.3f} |")
+    lines.append("")
+    lines += [
+        "## B. Model vs historical-mean prediction", "",
+        "Same definitions as phase 1: the every-fifth-row hold-out, the training-mean baseline, `mae_ratio` = model "
+        "MAE ÷ baseline MAE (below 1 = better than the baseline). Both MAEs are recomputed from the recorded "
+        "predictions and the CSV; the program's own `baseline`, `mae_model` and `mae_baseline` are compared but "
+        "never used. **Primary:** ran, schema valid, mask leakage rerun passed.", "",
+        "| domain | T | attempted | exec. failed | bad answer | schema valid | leakage failed | leakage unverified | "
+        "primary n | median MAE ratio | min–max ratio | median MAE advantage | beats baseline | delivery rate |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|",
+    ]
+    for s in cells("prediction"):
+        bad = s["answer_missing"] + s["answer_invalid_json"] + s["answer_schema_error"]
+        rng = "—" if s["min_mae_ratio"] == "" else f"{s['min_mae_ratio']:.3f}–{s['max_mae_ratio']:.3f}"
+        lines.append(
+            f"| {s['domain']} | {s['treatment']} | {s['attempted']} | {s['execution_failed'] + s['generation_failed']} "
+            f"| {bad} | {s['schema_valid']} | {s['gate_failed']} | {s['gate_unverified']} | {s['primary_n']} | "
+            f"{_num(s['median_mae_ratio'])} | {rng} | {_num(s['median_mae_advantage'])} | "
+            f"{s['beats_n']}/{s['primary_n']} | {_pct(s['delivery_rate'])} |")
+    lines += ["", "### By domain", "",
+              "| domain | request | baseline MAE | attempted | primary n | median MAE ratio | delivery rate |",
+              "|---|---|---:|---:|---:|---:|---:|"]
+    for s in [s for s in summary if s["metric"] == "prediction" and s["scope"] == "domain"]:
+        lines.append(f"| {s['domain']} | {s['request_id']} | {_num(s['baseline_mae'])} | {s['attempted']} | "
+                     f"{s['primary_n']} | {_num(s['median_mae_ratio'])} | {_pct(s['delivery_rate'])} |")
+    pv = [r for r in pred_rows if r["answer_state"] == "valid"]
+    mism = {k: sum(r[k] is False for r in pv) for k in
+            ("reported_baseline_matches", "reported_mae_model_matches", "reported_mae_baseline_matches")}
+    lines += ["", "### Reported vs recomputed values", "",
+              f"Among {len(pv)} schema-valid prediction answers, the program's reported value disagreed with the "
+              f"recomputed one for: baseline mean {mism['reported_baseline_matches']}, model MAE "
+              f"{mism['reported_mae_model_matches']}, baseline MAE {mism['reported_mae_baseline_matches']}. "
+              "Only recomputed values are used above.", ""]
+    lines += ["## Per-trial values", "",
+              "| domain | T | trial | selection | guided d2h | advantage vs analytical | win fraction | prediction | "
+              "MAE ratio |", "|---|---|---:|---|---:|---:|---:|---|---:|"]
+    pmap = {(r["domain"], r["treatment"], r["trial"]): r for r in pred_rows}
+    for r in sel_rows:
+        p = pmap.get((r["domain"], r["treatment"], r["trial"]), {})
+        lines.append(f"| {r['domain']} | {r['treatment']} | {r['trial']} | {r['exclusion_reason'] or 'included'} | "
+                     f"{_num(r['median_guided_d2h'])} | {_num(r['advantage_vs_analytic'], '+.3f')} | "
+                     f"{_num(r['win_fraction'], '.2f')} | {p.get('exclusion_reason') or 'included'} | "
+                     f"{_num(p.get('mae_ratio', ''))} |")
+    lines += [
+        "", "## Limitations", "",
+        "- **Three trials per cell, often fewer usable.** No statistical comparison between treatments is made.",
+        "- **Repeats are not trials.** The 20 repeats inside one answer come from one program run; the win fraction "
+        "describes that program, not variation between LLM trials.",
+        "- **Pairing is as recorded.** Repeat i of `ours` is compared with repeat i of `random`; the archive does not "
+        "show whether the program used the same seed or candidate pool for both arms.",
+        "- **The arms' evaluated rows are not archived**, so the reported best rows cannot be checked against what "
+        "each arm actually saw. The analytical baseline avoids relying on the program's random arm.",
+        "- **\"Best\" is judged by d2h here.** The frozen checker also accepts z-score sums and rank sums; the programs "
+        "may have used another overall score to pick their best rows.",
+        "- **Budgets differ by domain** (Cars 30, NASA 18, Apache 30) and so do pool sizes.",
+        "- **The prediction race uses the same split and target as Guess** for Cars and Apache (and NASA's Effort); "
+        "it comes from a later step of the same trials, so it is not independent evidence.",
+        "- **T7 is not included** in this phase.",
+        "", "## Provenance", "",
+        f"- Archive: `{manifest['inputs']['archive']['path']}` (sha256 `{manifest['inputs']['archive']['sha256']}`)",
+        f"- Code commit: `{manifest['git']['commit']}` on `{manifest['git']['branch']}`"
+        f"{' (uncommitted changes present)' if manifest['git']['dirty'] else ''}",
+        f"- Command: `{manifest['command']}`",
+        "- Full input and output hashes: `manifest.json`.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=None, race=None):
     out = guard_out(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     files = {
@@ -1009,6 +1476,14 @@ def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=N
             "selection_quality.csv": to_csv(sel_rows, SELECTION_FIELDS),
             "selection_summary.csv": to_csv(sel_summary, SELECTION_SUMMARY_FIELDS),
             "selection_report.md": selection_report(sel_rows, sel_summary, manifest),
+        })
+    if race is not None:
+        rs, rp, rsum = race
+        files.update({
+            "race_selection.csv": to_csv(rs, RACE_SELECTION_FIELDS),
+            "race_prediction.csv": to_csv(rp, RACE_PREDICTION_FIELDS),
+            "race_summary.csv": to_csv(rsum, RACE_SUMMARY_FIELDS),
+            "race_report.md": race_report(rs, rp, rsum, manifest),
         })
     for name, text in files.items():
         (out / name).write_text(text, encoding="utf-8")
@@ -1036,9 +1511,13 @@ def main(argv=None):
     sel = extract_selection(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
     sel_summary = summarize_selection(sel)
     manifest = build_manifest(a.archive, a.runs, a.requirements, a.data_dir, argv)
-    out = write_outputs(a.out, rows, summary, manifest, sel, sel_summary)
+    rsel = extract_race_selection(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
+    rpred = extract_race_prediction(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
+    out = write_outputs(a.out, rows, summary, manifest, sel, sel_summary, (rsel, rpred, summarize_race(rsel, rpred)))
     print(f"prediction: {len(rows)} attempts, {sum(r['primary'] for r in rows)} in the primary metric")
     print(f"selection:  {len(sel)} attempts, {sum(r['primary'] for r in sel)} in the primary metric")
+    print(f"race selection:  {len(rsel)} attempts, {sum(r['primary'] for r in rsel)} in the primary metric")
+    print(f"race prediction: {len(rpred)} attempts, {sum(r['primary'] for r in rpred)} in the primary metric")
     print(f"wrote {out}")
     return 0
 

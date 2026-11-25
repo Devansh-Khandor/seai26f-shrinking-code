@@ -1,7 +1,7 @@
 {
-  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget",
+  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; phase 3: Race (guided vs random selection, model vs historical-mean prediction)",
   "status": "post-observation (added after the Task Talk; not pre-registered)",
-  "generated_utc": "2026-11-25T05:25:20+00:00",
+  "generated_utc": "2026-11-25T05:49:17+00:00",
   "command": "python -m harness.external",
   "model": "gpt-oss-20b",
   "protocol": {
@@ -64,6 +64,42 @@
       "primary_inclusion": "program ran; ANSWER accepted by harness.answers.check_request; honeypot rerun recorded as passed",
       "honeypot_unverified_policy": "excluded from primary (analysis choice)",
       "shuffled_rerun": "recorded, not gating"
+    },
+    "race": {
+      "requests": {
+        "cars": {
+          "select": "CAR-19",
+          "predict": "CAR-20",
+          "step": 10
+        },
+        "nasa": {
+          "select": "NASA-20",
+          "predict": "NASA-19",
+          "step": 10
+        },
+        "apache": {
+          "select": "APACHE-19",
+          "predict": "APACHE-20",
+          "step": 10
+        }
+      },
+      "note": "NASA-19 is the prediction race and NASA-20 the selection race; Cars and Apache are the other way round",
+      "selection": {
+        "answer": "{\"budget\": b, \"repeats\": >= 20, \"ours\": [best row per repeat], \"random\": [best of b random rows per repeat], \"verdict\": ...}; schema validated by harness.answers.check_request",
+        "score": "harness.oracle.d2h over all rows of the CSV (lower is better)",
+        "empirical": "archived per-repeat rows of both arms: medians, median_advantage = median random d2h - median guided d2h (positive = guided better), win_fraction = repeats where guided d2h < random d2h (pairs taken by repeat index as recorded)",
+        "analytical": "expected_random_best = exact expected best d2h of `budget` rows drawn uniformly without replacement from all rows; advantage_vs_analytic = expected_random_best - median guided d2h",
+        "primary_inclusion": "program ran; schema valid; honeypot rerun passed; reported budget == harness.oracle.budget(n)",
+        "empirical_inclusion": "primary and the frozen check 'random baseline is really random' passed on the base run",
+        "delivered": "primary and advantage_vs_analytic > 0 (analysis choice)",
+        "unverifiable": "the rows each arm evaluated are not archived, so it cannot be checked that `ours` and `random` are really the best of what each arm saw"
+      },
+      "prediction": {
+        "metric": "same definitions as phase 1 (every-fifth-row hold-out, training-mean baseline, mae_ratio)",
+        "verification": "model and baseline MAE recomputed from the recorded predictions and the CSV; the program's reported baseline, mae_model and mae_baseline are compared (rel. 0.5%, 1%, 1% as the frozen checker does) but never used",
+        "primary_inclusion": "program ran; schema valid; mask leakage rerun passed",
+        "separate_from_phase1": "the Guess request (skill 2) and the Race request (skill 10) are never pooled"
+      }
     }
   },
   "inputs": {
@@ -106,8 +142,8 @@
     "code": {
       "external": {
         "path": "harness/external.py",
-        "sha256": "f5cd3ea01d6f29a99e33a225b5849d5a640b9b1bbbb18970d329f02787c72b13",
-        "bytes": 55755
+        "sha256": "e5b96329559891e3961521f6938295646b402fa9be842739bfb2aa077274e580",
+        "bytes": 85741
       },
       "answers": {
         "path": "harness/answers.py",
@@ -127,7 +163,7 @@
     }
   },
   "git": {
-    "commit": "ebcd5da4f74f7622ae3f414da2cb8fc32933cad5",
+    "commit": "1318303c4841a311877ae6b38dfeef558bcec05f",
     "branch": "analysis/external-metrics",
     "dirty": true
   },
@@ -144,7 +180,7 @@
       "sha256": "bfdf4537a3c13346996dbd2b9c6499ec6e5da58424e4827ca37ee7b8a7b222cd"
     },
     "prediction_report.md": {
-      "sha256": "7baf4e4951f676edc140da27c042ac50b4571a549cde7c71e89581b893d7eada"
+      "sha256": "e0c5f78bb428279ed62c56da70977cf4c6fb6fa0753534c58daa23af834976ed"
     },
     "selection_quality.csv": {
       "sha256": "35479bc46e332515390b91ffe682fe249924012c89835ab9633f249db6a65dda"
@@ -153,7 +189,19 @@
       "sha256": "3ecb40ca54175f50950b4ed8150d1ef79bf83a3eaded5591c8f59596f90fcfb0"
     },
     "selection_report.md": {
-      "sha256": "055cc3f97fd094561a059493f29a2b6b01a665b9a40199d3eb2a1414835051ce"
+      "sha256": "870d93d6f05e0ca763e388f4388d24f0d3cfbd333fb998f1c302221e7661882c"
+    },
+    "race_selection.csv": {
+      "sha256": "48487d69d56add1df70a6fd99aba8f5b56da4d4a272d9824fd6227f8bf08ca31"
+    },
+    "race_prediction.csv": {
+      "sha256": "d7b2786dfe2ba10d077f65627534aa6314f608749aa15e687801ba3b933b4945"
+    },
+    "race_summary.csv": {
+      "sha256": "97b8d2880665321a8aa278ebd11e4b12d2dc546e3291fd87a1bae7cc6d0cc9b9"
+    },
+    "race_report.md": {
+      "sha256": "35a5b138e388d4710290ea397e376f09a7bc5b75e9267ab0edbbc807830a9b8c"
     }
   }
 }
