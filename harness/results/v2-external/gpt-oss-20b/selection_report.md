@@ -154,6 +154,6 @@ Normalized regret and the advantage are on the d2h scale of each domain; the dom
 ## Provenance
 
 - Archive: `harness/results/v2/gpt-oss-20b-3trials.zip` (sha256 `d1a51a3fa3711829ede726dd08e1f77da070fc3e3064fdcd1971d24974eb7683`)
-- Code commit: `b986524c3fa050ce9b4c7c808687847804dbafa4` on `analysis/external-metrics` (uncommitted changes present)
+- Code commit: `6e91f8bc682873d83705b476f40a9199922f9e6d` on `analysis/external-metrics` (uncommitted changes present)
 - Command: `python -m harness.external`
 - Full input and output hashes: `manifest.json`.

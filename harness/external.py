@@ -894,7 +894,14 @@ def summarize_race(sel_rows, pred_rows):
 T7_PROTOCOL = "v2-common: every-fifth-row hold-out, training-mean baseline (t7_validation adapter)"
 T7_IDENTITY = "T7: one human-directed implementation per domain; deterministic; not an LLM trial"
 # (domain, request, step, adapter, original T7 modules the adapter imports)
+CARS_FOUNDATION = ("shrinking_code/data.py", "shrinking_code/distance.py", "shrinking_code/stats.py",
+                   "shrinking_code/prediction.py", "shrinking_code/evaluation.py")
 T7_PREDICTION = (
+    ("cars", "CAR-03", GUESS_STEP, "t7_validation/adapters/cars/guess.py",
+     ("human_t7/cars/guess.py", "t7_validation/adapters/cars/common.py") + CARS_FOUNDATION),
+    ("cars", "CAR-20", RACE_STEP, "t7_validation/adapters/cars/race.py",
+     ("human_t7/cars/race.py", "t7_validation/adapters/cars/common.py") + CARS_FOUNDATION
+     + ("shrinking_code/baselines.py", "shrinking_code/certification.py")),
     ("nasa", "NASA-03", GUESS_STEP, "t7_validation/adapters/nasa/guess.py",
      ("human_t7/nasa/remember.py", "human_t7/nasa/guess.py")),
     ("nasa", "NASA-19", RACE_STEP, "t7_validation/adapters/nasa/race.py",
@@ -906,9 +913,23 @@ T7_PREDICTION = (
       "human_t7/apache/race.py")),
 )
 T7_TIMEOUT = 300
+# Requests judged by the semantic checker for each T7 row. NASA and Apache adapters answer both
+# requests of their step, as their t7_validation runners check; the Cars adapters answer only the
+# prediction request (CAR-04 and CAR-19 are out of scope), so only that request is judged.
+T7_EVALUATED = {"CAR-03": ("CAR-03",), "CAR-20": ("CAR-20",)}
+T7_FOUNDATION = {
+    "cars": "human-directed scripts on the shared shrinking_code library, which was developed with LLM assistance "
+            "(README, Disclosure); the library is not independently human-written",
+    "nasa": "standalone human-directed modules (human_t7/nasa)",
+    "apache": "standalone human-directed modules (human_t7/apache)",
+}
 
 # The original T7 write-ups use other splits; quoted only to keep them separately identified.
 T7_ORIGINAL = {
+    "CAR-03": ("human_t7/cars/guess.py", "seeded shuffled 80/20 split (train_test_split, seed 42)",
+               "no MAE is recorded in the repository; the script prints it when run"),
+    "CAR-20": ("human_t7/cars/race.py", "seeded shuffled 80/20 split (train_test_split, seed 42)",
+               "no MAE is recorded in the repository; the script prints it when run"),
     "NASA-03": ("human_t7/nasa/RESULTS.md", "first 74 rows train, last 19 held out; the Guess section defers to "
                 "the Race section for its MAE comparison", "kNN 1,092.17 vs historical mean 1,031.84 (effort)"),
     "NASA-19": ("human_t7/nasa/RESULTS.md", "first 74 rows train, last 19 held out",
@@ -921,7 +942,7 @@ T7_ORIGINAL = {
 
 T7_PREDICTION_FIELDS = [
     "treatment", "implementation", "is_independent_trial", "domain", "request_id", "skill_index", "kind",
-    "protocol", "target", "target_direction", "adapter", "implementation_files",
+    "protocol", "target", "target_direction", "foundation", "adapter", "implementation_files", "evaluated_requests",
     "check_runs", "check_timed_out", "step_status", "request_status", "contract",
     "answer_state", "answer_detail", "leakage_gate", "leakage_detail", "shuffled_gate", "rerun_outcomes",
     "n_rows", "n_training", "n_heldout", "heldout_rows_match", "model_mae", "baseline_mean", "baseline_mae",
@@ -945,6 +966,8 @@ T7_PREDICTION_PROTOCOL = {
     "comparison": "descriptive only; T7 is n = 1 per domain, so same()/bestRanks are not applied",
     "development_note": "the T7 adapters were written and refined against the common semantic checker; "
                         "T1-T6 programs were generated one-shot without access to it",
+    "foundation": T7_FOUNDATION,
+    "evaluated_requests": "NASA/Apache: both requests of the step; Cars: the prediction request only",
 }
 
 
@@ -984,11 +1007,12 @@ def t7_prediction_row(domain, rid, step, adapter, implementation, data_dir=DATA_
     csv_path = Path(data_dir) / DATASETS[domain]
     data = O.load(csv_path)
     base_mean, base_mae, held = baseline(data, target)
-    rids = request_ids(domain, step)
+    rids = T7_EVALUATED.get(rid, request_ids(domain, step))
     row = {f: "" for f in T7_PREDICTION_FIELDS}
     row.update(treatment="T7", implementation="human-directed (single deterministic implementation)",
                is_independent_trial=False, domain=domain, request_id=rid, skill_index=step, kind=kind,
                protocol=T7_PROTOCOL, target=target, target_direction=dict(data.goals())[target], adapter=adapter,
+               foundation=T7_FOUNDATION[domain], evaluated_requests=";".join(rids),
                implementation_files=";".join(implementation), n_rows=data.n, n_training=data.n - len(held),
                n_heldout=len(held), baseline_mean=base_mean, baseline_mae=base_mae, primary=False,
                leakage_gate="not_run", shuffled_gate="not_run",
@@ -1059,7 +1083,7 @@ def extract_t7_prediction(data_dir=DATA_DIR, runner=run_adapter, specs=T7_PREDIC
 def t7_prediction_report(t7_rows, guess_rows, race_rows, manifest):
     """T7 beside the T1-T6 cells of the same request. Descriptive only: T7 is n = 1."""
     lines = [
-        "# External metric, phase 4B: T7 prediction (NASA and Apache) beside T1–T6",
+        "# External metric, phases 4B–4C: T7 prediction (Cars, NASA, Apache) beside T1–T6",
         "",
         "**Status: post-observation analysis.** Added after the Task Talk; not part of the pre-registered plan in "
         "`docs/hypotheses.md`.",
@@ -1072,6 +1096,13 @@ def t7_prediction_report(t7_rows, guess_rows, race_rows, manifest):
         "**How the two sides were built differs.** The T7 adapters were written and refined against the common "
         "semantic checker. The T1–T6 programs were generated one-shot by `gpt-oss-20b` without access to it; "
         "their failed and crashed attempts are counted, while T7's development iterations are not.",
+        "",
+        "**What the T7 code is built on differs by domain.** NASA and Apache T7 are standalone human-directed "
+        "modules. Cars T7 is a set of human-directed scripts that call the shared `shrinking_code/` library, which "
+        "was developed with LLM assistance (README, \"Disclosure\"); the Cars predictions therefore come from that "
+        "library, which is not independently human-written. The Cars adapters (`t7_validation/adapters/cars/`, "
+        "added in phase 4C) only re-split the data to the common protocol and print the common answer format; "
+        "they add no modelling logic, and their lines are not T7 implementation LOC.",
         "",
         "## Protocol alignment",
         "",
@@ -1132,13 +1163,17 @@ def t7_prediction_report(t7_rows, guess_rows, race_rows, manifest):
         "## Limitations", "",
         "- **n = 1 per domain and request.** T7 can only be placed beside the T1–T6 distributions, not tested "
         "against them.",
-        "- **Guess and Race prediction share data.** For NASA (Effort) and Apache (Performance) the Guess and Race "
-        "requests use the same target, split and model in T7, so their two rows are near-duplicates, not two "
-        "pieces of evidence.",
+        "- **Guess and Race prediction share data.** In every domain (Cars `Mpg+`, NASA `Effort-`, Apache "
+        "`Performance-`) the Guess and Race requests use the same target, split and model in T7, so each pair of "
+        "rows is one result shown twice, not two pieces of evidence.",
         "- **Few usable T1–T6 trials.** Several T1–T6 cells have 0–1 usable trials.",
         "- **Development process differs** (see above). A T7 result that matches or beats T1–T6 here reflects an "
         "implementation refined against the checker.",
-        "- **Cars T7 is not included**: it has no validation adapters yet.",
+        "- **Cars adapters judge only the prediction request.** CAR-04 and CAR-19 are not implemented, so the "
+        "semantic verdict shown for CAR-03 and CAR-20 is the request's own verdict (`evaluated_requests`), not a "
+        "step verdict. NASA and Apache adapters are judged on both requests of their step, as their runners do.",
+        "- **The Cars CAR-20 verdict label** is derived from the shared library's own paired comparison "
+        "(`compare().same`) and the median errors; it does not affect the MAE values.",
         "", "## Provenance", "",
         f"- Code commit: `{manifest['git']['commit']}` on `{manifest['git']['branch']}`"
         f"{' (uncommitted changes present)' if manifest['git']['dirty'] else ''}",

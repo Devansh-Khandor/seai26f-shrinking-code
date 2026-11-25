@@ -1,7 +1,7 @@
 {
   "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; phase 3: Race (guided vs random selection, model vs historical-mean prediction); phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters",
   "status": "post-observation (added after the Task Talk; not pre-registered)",
-  "generated_utc": "2026-11-25T06:28:18+00:00",
+  "generated_utc": "2026-11-25T06:41:58+00:00",
   "command": "python -m harness.external",
   "model": "gpt-oss-20b",
   "protocol": {
@@ -105,6 +105,36 @@
       "identity": "T7: one human-directed implementation per domain; deterministic; not an LLM trial",
       "protocol": "v2-common: every-fifth-row hold-out, training-mean baseline (t7_validation adapter)",
       "requests": {
+        "CAR-03": {
+          "domain": "cars",
+          "step": 2,
+          "adapter": "t7_validation/adapters/cars/guess.py",
+          "implementation": [
+            "human_t7/cars/guess.py",
+            "t7_validation/adapters/cars/common.py",
+            "shrinking_code/data.py",
+            "shrinking_code/distance.py",
+            "shrinking_code/stats.py",
+            "shrinking_code/prediction.py",
+            "shrinking_code/evaluation.py"
+          ]
+        },
+        "CAR-20": {
+          "domain": "cars",
+          "step": 10,
+          "adapter": "t7_validation/adapters/cars/race.py",
+          "implementation": [
+            "human_t7/cars/race.py",
+            "t7_validation/adapters/cars/common.py",
+            "shrinking_code/data.py",
+            "shrinking_code/distance.py",
+            "shrinking_code/stats.py",
+            "shrinking_code/prediction.py",
+            "shrinking_code/evaluation.py",
+            "shrinking_code/baselines.py",
+            "shrinking_code/certification.py"
+          ]
+        },
         "NASA-03": {
           "domain": "nasa",
           "step": 2,
@@ -150,7 +180,13 @@
       "scoring": "same functions as phases 1 and 3: baseline, model_mae, mae_ratio on harness.oracle.held_out rows",
       "inclusion": "same as T1-T6: ran; ANSWER accepted by harness.answers.check_request; mask leakage rerun passed",
       "comparison": "descriptive only; T7 is n = 1 per domain, so same()/bestRanks are not applied",
-      "development_note": "the T7 adapters were written and refined against the common semantic checker; T1-T6 programs were generated one-shot without access to it"
+      "development_note": "the T7 adapters were written and refined against the common semantic checker; T1-T6 programs were generated one-shot without access to it",
+      "foundation": {
+        "cars": "human-directed scripts on the shared shrinking_code library, which was developed with LLM assistance (README, Disclosure); the library is not independently human-written",
+        "nasa": "standalone human-directed modules (human_t7/nasa)",
+        "apache": "standalone human-directed modules (human_t7/apache)"
+      },
+      "evaluated_requests": "NASA/Apache: both requests of the step; Cars: the prediction request only"
     }
   },
   "inputs": {
@@ -193,8 +229,8 @@
     "code": {
       "external": {
         "path": "harness/external.py",
-        "sha256": "e012f0a16ca1556a660dd1e72e65a77782297f722dfded5c46e391aa3defe348",
-        "bytes": 103045
+        "sha256": "306adfe372ea4747d823e97058ce40c6cb5bbf868843024c70828e6e5f59c845",
+        "bytes": 106162
       },
       "answers": {
         "path": "harness/answers.py",
@@ -233,6 +269,16 @@
         "sha256": "24d926b9c64b3973c17fb793cc316e04b6ba0c19fce3bd1946f90b2e5913c4d9",
         "bytes": 6259
       },
+      "human_t7/cars/guess.py": {
+        "path": "human_t7/cars/guess.py",
+        "sha256": "5f0a03515937e4351499c966e70e2ffa8492d92c421eb5806078332a9c6556ff",
+        "bytes": 2129
+      },
+      "human_t7/cars/race.py": {
+        "path": "human_t7/cars/race.py",
+        "sha256": "d11383691662fa55be0b696ceb30bb2e3119abaa62632db8c6d777b18a675252",
+        "bytes": 3163
+      },
       "human_t7/nasa/choose.py": {
         "path": "human_t7/nasa/choose.py",
         "sha256": "69468280c045bc59026f2766d23eee0c919872f07f3231f373ffef7e7d801918",
@@ -253,6 +299,41 @@
         "sha256": "1fcde3ea2f33afbb86fd2f0e24eb9a734fc76e7b387b770cf0c2ad17a5a402e0",
         "bytes": 4381
       },
+      "shrinking_code/baselines.py": {
+        "path": "shrinking_code/baselines.py",
+        "sha256": "b538c9d26d5b484212f15ab9c5ec2105e84a259dfd55515e74a610611e313557",
+        "bytes": 6726
+      },
+      "shrinking_code/certification.py": {
+        "path": "shrinking_code/certification.py",
+        "sha256": "0d74349c28881885661fdbf3dcd179fd46361b7192e580f389ced3bd9d59afb5",
+        "bytes": 2462
+      },
+      "shrinking_code/data.py": {
+        "path": "shrinking_code/data.py",
+        "sha256": "f8d87f7c738d50c6e4d01aa99c093826277310a6432a0bed07a13358f92b812c",
+        "bytes": 2367
+      },
+      "shrinking_code/distance.py": {
+        "path": "shrinking_code/distance.py",
+        "sha256": "26714e25d3404aead1d4b1494ae77b50277c8b8d8c2bcfc082312e39a2389e02",
+        "bytes": 1462
+      },
+      "shrinking_code/evaluation.py": {
+        "path": "shrinking_code/evaluation.py",
+        "sha256": "09eee342a3c8194805fad5c90689e7ab752da46169b89655dadb57bd10293856",
+        "bytes": 2481
+      },
+      "shrinking_code/prediction.py": {
+        "path": "shrinking_code/prediction.py",
+        "sha256": "c7ea459a08eae9078335130a16fad2990f3716463278ec3dc096da4f994c7115",
+        "bytes": 2598
+      },
+      "shrinking_code/stats.py": {
+        "path": "shrinking_code/stats.py",
+        "sha256": "c266ac58278888effb5979c55581e78201a9642513e333bb2f02f051283a86d8",
+        "bytes": 1540
+      },
       "t7_validation/adapters/apache/guess.py": {
         "path": "t7_validation/adapters/apache/guess.py",
         "sha256": "6447cf1075cdcb50e5a265124659ea6f56484d81b03596a1f6f62146de180d70",
@@ -262,6 +343,21 @@
         "path": "t7_validation/adapters/apache/race.py",
         "sha256": "dfc17fb0beb0289178799b819c88f406ec0a1124b5a01e2888f241ec5a5b818f",
         "bytes": 4807
+      },
+      "t7_validation/adapters/cars/common.py": {
+        "path": "t7_validation/adapters/cars/common.py",
+        "sha256": "dc8b7ae716c7eee742eec1055abc7ecf2a9756f45c0a4435f05c9267f3f91be2",
+        "bytes": 1542
+      },
+      "t7_validation/adapters/cars/guess.py": {
+        "path": "t7_validation/adapters/cars/guess.py",
+        "sha256": "dbda2a85fb0d20cd0c62fa886f87bef432719397720917e08d24c027f2361f5f",
+        "bytes": 1741
+      },
+      "t7_validation/adapters/cars/race.py": {
+        "path": "t7_validation/adapters/cars/race.py",
+        "sha256": "aa00382c7c923ea27a30fc0228cb19a5a3eb0bfb0988edcb32cc3eecfd0a86c0",
+        "bytes": 2142
       },
       "t7_validation/adapters/nasa/guess.py": {
         "path": "t7_validation/adapters/nasa/guess.py",
@@ -276,7 +372,7 @@
     }
   },
   "git": {
-    "commit": "b986524c3fa050ce9b4c7c808687847804dbafa4",
+    "commit": "6e91f8bc682873d83705b476f40a9199922f9e6d",
     "branch": "analysis/external-metrics",
     "dirty": true
   },
@@ -293,7 +389,7 @@
       "sha256": "bfdf4537a3c13346996dbd2b9c6499ec6e5da58424e4827ca37ee7b8a7b222cd"
     },
     "prediction_report.md": {
-      "sha256": "26772c3080211fbba699081c61f278b3d55c787f500ebe4d647f2af7105b05d2"
+      "sha256": "504e914bd2dd3c9810bd3292e5bcfd105f816ac44dd4eef59d3ad30f7ee46e2f"
     },
     "selection_quality.csv": {
       "sha256": "35479bc46e332515390b91ffe682fe249924012c89835ab9633f249db6a65dda"
@@ -302,7 +398,7 @@
       "sha256": "3ecb40ca54175f50950b4ed8150d1ef79bf83a3eaded5591c8f59596f90fcfb0"
     },
     "selection_report.md": {
-      "sha256": "9cc72795e9ceeb2a79774ee09129b25b5b9e6082265a0ce70bab64f23817d705"
+      "sha256": "6236984de61e5bedf6fcd8bff24c90d7b463bf799c4dd276c22785175559f7a4"
     },
     "race_selection.csv": {
       "sha256": "48487d69d56add1df70a6fd99aba8f5b56da4d4a272d9824fd6227f8bf08ca31"
@@ -314,13 +410,13 @@
       "sha256": "97b8d2880665321a8aa278ebd11e4b12d2dc546e3291fd87a1bae7cc6d0cc9b9"
     },
     "race_report.md": {
-      "sha256": "c72905d0937a9f1d073dc0ef0c0d1286ed0283cdd0109f02bd2049078ed7af6c"
+      "sha256": "d085ad7656e73f0adce66edfde388c0e7b01ce956a62dd33bc749f01c69552aa"
     },
     "t7_prediction.csv": {
-      "sha256": "2bc58ed1c1a4a45ef899758c7ae7935fca19ce8f3ca25c2577feb23c6bacfb41"
+      "sha256": "5a571583769304a7996d28ab319cb9a4e5d45fafc1e3aaae328c324b9ef71034"
     },
     "t7_prediction_report.md": {
-      "sha256": "2db78c73c640c6fb1d735e9a1a5cb6cf796b42c78531bd122e2fdd270a6277ea"
+      "sha256": "e83d856bc45e28f7433f377fa6412edae189f33e97e1353379356a4f409144b8"
     }
   }
 }

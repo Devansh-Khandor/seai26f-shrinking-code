@@ -1020,7 +1020,8 @@ def _tree_hashes(root):
 
 class TestT7Definitions(unittest.TestCase):
     def test_adapter_discovery(self):
-        self.assertEqual([r for _, r, _, _, _ in E.T7_PREDICTION], ["NASA-03", "NASA-19", "APACHE-03", "APACHE-20"])
+        self.assertEqual([r for _, r, _, _, _ in E.T7_PREDICTION],
+                         ["CAR-03", "CAR-20", "NASA-03", "NASA-19", "APACHE-03", "APACHE-20"])
         for domain, rid, step, adapter, impl in E.T7_PREDICTION:
             src = (E.REPO / adapter).read_text()
             self.assertTrue(adapter.startswith(f"t7_validation/adapters/{domain}/"))
@@ -1029,12 +1030,18 @@ class TestT7Definitions(unittest.TestCase):
             self.assertIn(A.REQUESTS[rid][0], ("predict", "race_predict"))
             for f in impl:
                 self.assertTrue((E.REPO / f).is_file(), f)
-                self.assertTrue(f.startswith(f"human_t7/{domain}/"))
-                self.assertIn(Path(f).stem, src, f)            # the adapter imports this original module
+                if domain == "cars":
+                    self.assertTrue(f.startswith(("human_t7/cars/", "shrinking_code/", "t7_validation/adapters/cars/")))
+                else:
+                    self.assertTrue(f.startswith(f"human_t7/{domain}/"))
+                    self.assertIn(Path(f).stem, src, f)        # the adapter imports this original module
 
     def test_original_protocol_numbers_are_quoted_from_results(self):
         for rid, (path, _, text) in E.T7_ORIGINAL.items():
             results = (E.REPO / path).read_text()
+            if rid.startswith("CAR"):                          # no recorded Cars MAE to quote
+                self.assertIn("train_test_split", results)
+                continue
             for value in {"NASA": ("1,092.17", "1,031.84"), "APACHE": ("174.79", "484.05")}[rid.split("-")[0]]:
                 self.assertIn(value, results)
                 self.assertIn(value, text)
@@ -1062,7 +1069,7 @@ def _fake_runner(predict):
     return run
 
 
-NASA_SPEC = E.T7_PREDICTION[0]
+NASA_SPEC = next(x for x in E.T7_PREDICTION if x[1] == "NASA-03")
 
 
 class TestT7Gates(unittest.TestCase):
@@ -1110,8 +1117,8 @@ class TestT7Prediction(unittest.TestCase):
         cls.by = {r["request_id"]: r for r in cls.rows}
 
     def test_one_record_per_request(self):
-        self.assertEqual(len(self.rows), 4)
-        self.assertEqual(set(self.by), {"NASA-03", "NASA-19", "APACHE-03", "APACHE-20"})
+        self.assertEqual(len(self.rows), 6)
+        self.assertEqual(set(self.by), {"CAR-03", "CAR-20", "NASA-03", "NASA-19", "APACHE-03", "APACHE-20"})
         for r in self.rows:
             self.assertEqual(r["treatment"], "T7")
             self.assertFalse(r["is_independent_trial"])
@@ -1127,6 +1134,7 @@ class TestT7Prediction(unittest.TestCase):
             self.assertEqual(r["target"], A.REQUESTS[r["request_id"]][1]["target"])
         self.assertEqual(self.by["NASA-03"]["n_heldout"], 18)
         self.assertEqual(self.by["APACHE-03"]["n_heldout"], 38)
+        self.assertEqual((self.by["CAR-03"]["n_heldout"], self.by["CAR-03"]["n_training"]), (79, 319))
 
     def test_mae_recomputed_from_adapter_output(self):
         for domain, rid, step, adapter, impl in E.T7_PREDICTION:
@@ -1148,6 +1156,17 @@ class TestT7Prediction(unittest.TestCase):
             self.assertIn("mask", r["rerun_outcomes"])
             self.assertIn("shuffled", r["rerun_outcomes"])
 
+    def test_cars_rows(self):
+        a, b = self.by["CAR-03"], self.by["CAR-20"]
+        for r, rid in ((a, "CAR-03"), (b, "CAR-20")):
+            self.assertEqual(r["evaluated_requests"], rid)
+            self.assertIn("LLM assistance", r["foundation"])
+            self.assertIn(r["shuffled_gate"], ("pass", "fail"))
+            self.assertNotIn("honeypot", r["rerun_outcomes"])
+        self.assertEqual((a["model_mae"], a["baseline_mae"]), (b["model_mae"], b["baseline_mae"]))
+        for rid in ("NASA-03", "APACHE-20"):
+            self.assertIn("standalone", self.by[rid]["foundation"])
+
     def test_reproducible(self):
         self.assertEqual(self.rows, self.again)
 
@@ -1158,6 +1177,99 @@ class TestT7Prediction(unittest.TestCase):
 
     def test_frozen_results_untouched(self):
         self.assertEqual(_tree_hashes(E.FROZEN_DIR), self.frozen)
+
+
+CARS_SPECS = {x[1]: x for x in E.T7_PREDICTION if x[0] == "cars"}
+
+
+def _adapter_preds(rid, csv_path):
+    d, _, step, adapter, _ = CARS_SPECS[rid]
+    out = E.run_adapter(adapter, csv_path, (rid,))
+    assert out.runs, out.stderr
+    return {int(k): float(v) for k, v in A.parse_answers(out.stdout)[rid]["predictions"].items()}
+
+
+class TestCarsT7Adapters(unittest.TestCase):
+    """Cars T7 prediction adapters (phase 4C): orchestration of the shared library only."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.protected = {str(p): sha(p) for base in ("human_t7", "shrinking_code") for p in (E.REPO / base).rglob("*.py")}
+        cls.csv = E.DATA_DIR / "auto93.csv"
+        cls.p03 = _adapter_preds("CAR-03", cls.csv)
+        cls.p20 = _adapter_preds("CAR-20", cls.csv)
+
+    def test_discovery(self):
+        self.assertEqual(set(CARS_SPECS), {"CAR-03", "CAR-20"})
+        self.assertEqual(E.T7_EVALUATED, {"CAR-03": ("CAR-03",), "CAR-20": ("CAR-20",)})
+        for rid, (_, _, _, adapter, impl) in CARS_SPECS.items():
+            self.assertTrue((E.REPO / adapter).is_file())
+            self.assertIn(f"ANSWER {rid}", (E.REPO / adapter).read_text())
+            self.assertIn("shrinking_code/prediction.py", impl)
+        self.assertIn("LLM assistance", E.T7_FOUNDATION["cars"])
+
+    def test_reuses_the_original_calls(self):
+        guess = (E.REPO / "t7_validation/adapters/cars/guess.py").read_text()
+        race = (E.REPO / "t7_validation/adapters/cars/race.py").read_text()
+        self.assertIn("KNNRegressor.fit(training, k=K)", guess)
+        self.assertIn("prediction_race(training, heldout, TARGET)", race)
+        self.assertIn("KNNRegressor.fit(training, k=5)", (E.REPO / "human_t7/cars/guess.py").read_text())
+        self.assertIn("prediction_race(training, test, target)", (E.REPO / "human_t7/cars/race.py").read_text())
+        for src in (guess, race, (E.REPO / "t7_validation/adapters/cars/common.py").read_text()):
+            for forbidden in ("class ", "sqrt", "sorted(", "distance"):
+                self.assertNotIn(forbidden, src)                # no replacement model or distance code
+
+    def test_predictions_equal_direct_library_calls(self):
+        from shrinking_code.data import Row, Table
+        from shrinking_code.prediction import KNNRegressor
+        table = Table.load(self.csv)
+        training = Table(table.columns, tuple(r for r in table.rows if r.number % 5))
+        model = KNNRegressor.fit(training, k=5)
+        for r in table.rows:
+            if r.number % 5 == 0:
+                hidden = Row(r.number, tuple(None if c.role == "y" else v for c, v in zip(table.columns, r.cells)))
+                self.assertEqual(self.p03[r.number], model.predict(hidden, "Mpg+").value)
+
+    def test_heldout_alignment(self):
+        self.assertEqual(sorted(self.p03), O.held_out(CARS.n))
+        self.assertEqual(sorted(self.p20), O.held_out(CARS.n))
+
+    def test_car03_and_car20_predict_the_same(self):
+        self.assertEqual(self.p03, self.p20)
+
+    def test_masked_targets_do_not_move_predictions(self):
+        from harness import semantic as S
+        masked, _ = S.masked(CARS, "Mpg+")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "auto93.csv"
+            path.write_text(masked.text())
+            for rid, base in (("CAR-03", self.p03), ("CAR-20", self.p20)):
+                self.assertEqual(_adapter_preds(rid, path), base, rid)
+
+    def test_shuffled_copy_follows_rows(self):
+        from harness import semantic as S
+        shuffled, _ = S.shuffled(CARS)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "auto93.csv"
+            path.write_text(shuffled.text())
+            got = _adapter_preds("CAR-03", path)
+        self.assertEqual(sorted(got), O.held_out(CARS.n))            # still the rows divisible by 5 of that file
+
+    def test_leaky_cars_program_is_excluded(self):
+        from harness.checks import CheckResult
+
+        def leaky(adapter, csv_path, rids):
+            data = O.load(csv_path)
+            p = {str(r): data.value(r, "Mpg+") for r in O.held_out(data.n)}
+            return CheckResult(True, False, False, 0.0, "ANSWER CAR-03 " + json.dumps({"predictions": p, "mae": 0}), "")
+        d, rid, step, adapter, impl = CARS_SPECS["CAR-03"]
+        r = E.t7_prediction_row(d, rid, step, adapter, impl, runner=leaky)
+        self.assertEqual((r["leakage_gate"], r["exclusion_reason"], r["primary"]), ("fail", "leakage_failed", False))
+        self.assertEqual(r["evaluated_requests"], "CAR-03")
+
+    def test_original_code_unchanged(self):
+        now = {str(p): sha(p) for base in ("human_t7", "shrinking_code") for p in (E.REPO / base).rglob("*.py")}
+        self.assertEqual(now, self.protected)
 
 
 if __name__ == "__main__":
