@@ -1,0 +1,10 @@
+# The shrinking_code package and the harness itself use only the standard library.
+# These pins are needed only to run the T3/T4 (scikit-learn) code the harness generates.
+# Full pinned set so every run machine executes generated code against the same versions.
+cloudpickle==3.1.2
+joblib==1.6.0
+narwhals==2.28.0
+numpy==2.5.4
+scikit-learn==1.9.1
+scipy==1.18.1
+threadpoolctl==3.8.0

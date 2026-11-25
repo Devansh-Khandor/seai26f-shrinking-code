@@ -1,0 +1,24 @@
+You are extending a small data-analysis codebase for a client: $client.
+
+## Background
+$background
+
+## Dataset
+The client's data is `$csv_name`. Your program receives the CSV path as its only command-line argument. The first rows are:
+
+```
+$csv_preview
+```
+
+## Existing code from earlier skills in this project
+$prior_code
+
+## This step: skill $skill_index of 10 ($skill_name)
+The client asks for:
+
+$requests
+
+## How to write it
+$approach
+
+$contract

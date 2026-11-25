@@ -1,0 +1,1 @@
+Reuse and extend the existing skills' code as much as you can. Prefer importing or calling existing functions over writing new ones.
