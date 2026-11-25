@@ -463,7 +463,8 @@ class TestOutputs(unittest.TestCase):
                              {"prediction_mae.csv", "prediction_summary.csv", "prediction_report.md", "manifest.json",
                               "selection_quality.csv", "selection_summary.csv", "selection_report.md",
                               "race_selection.csv", "race_prediction.csv", "race_summary.csv", "race_report.md",
-                              "t7_prediction.csv", "t7_prediction_report.md"})
+                              "t7_prediction.csv", "t7_prediction_report.md",
+                              "fix_quality.csv", "fix_summary.csv", "fix_report.md"})
             self.assertEqual({p: sha(p) for p in before}, before)
             with open(out / "prediction_mae.csv", newline="") as f:
                 got = list(csv.DictReader(f))
@@ -1270,6 +1271,237 @@ class TestCarsT7Adapters(unittest.TestCase):
     def test_original_code_unchanged(self):
         now = {str(p): sha(p) for base in ("human_t7", "shrinking_code") for p in (E.REPO / base).rglob("*.py")}
         self.assertEqual(now, self.protected)
+
+
+CARS_FIX_CSV = """Clndrs,Volume,Model,origin,Lbs-,Acc+,Mpg+
+4,100,70,1,2000,16,30
+4,110,70,1,2100,15,28
+8,300,72,1,4000,11,12
+8,310,72,1,4100,10,11
+6,200,75,2,3000,14,20
+6,210,76,2,3100,13,19
+4,105,80,3,2050,17,33
+8,305,80,1,3900,12,14
+"""
+APACHE_FIX_CSV = """base,a,b,c,Performance-
+1,0,0,0,100
+1,1,0,0,200
+1,0,1,0,300
+1,1,1,0,400
+1,0,0,1,500
+1,1,0,1,600
+1,0,1,1,700
+1,1,1,1,800
+"""
+
+
+def _data(text):
+    return O.parse(text)
+
+
+class TestFixMetrics(unittest.TestCase):
+    def setUp(self):
+        self.cars = _data(CARS_FIX_CSV)
+        self.ap = _data(APACHE_FIX_CSV)
+        self.s = O.d2h(self.cars)
+
+    def test_alternatives_alignment_and_improvement(self):
+        ans = {"row": 4, "alternatives": [{"row": 3, "changes": {"Volume": [310, 300]}},
+                                          {"row": 8, "changes": {"Model": [72, 80]}}]}
+        m, fab, ok = E.fix_metrics(self.cars, "fix_alternatives", ans)
+        best = min((3, 8), key=lambda a: self.s[a])
+        self.assertEqual(fab, 0)
+        self.assertEqual((m["reference_row"], m["candidate_row"]), (4, best))
+        self.assertEqual(m["reference_score"], self.s[4])
+        self.assertAlmostEqual(m["observed_improvement"], self.s[4] - self.s[best])
+        near = O.XSpace(self.cars).nearest(4, 0.25)
+        self.assertEqual(m["n_alternatives_similar"], sum(a in near for a in (3, 8)))
+        self.assertEqual(m["n_alternatives_better"], sum(self.s[a] < self.s[4] for a in (3, 8)))
+        self.assertEqual(ok, m["reference_poor"] and m["n_alternatives_better_and_similar"] > 0)
+
+    def test_alternative_that_is_worse_is_not_success(self):
+        ans = {"row": 1, "alternatives": [{"row": 4, "changes": {"Clndrs": [4, 8]}}]}   # row 1 is good, row 4 bad
+        m, fab, ok = E.fix_metrics(self.cars, "fix_alternatives", ans)
+        self.assertLess(m["observed_improvement"], 0)
+        self.assertFalse(m["reference_poor"])
+        self.assertFalse(ok)
+
+    def test_fabricated_values_counted(self):
+        ans = {"row": 4, "alternatives": [{"row": 3, "changes": {"Volume": [999, 300]}}]}
+        self.assertEqual(E.fix_metrics(self.cars, "fix_alternatives", ans)[1], 1)
+
+    def test_targets_direction_and_minimum(self):
+        th = {"Lbs-": 2500, "Acc+": 15, "Mpg+": 25}           # rows 1, 2, 7 meet all three
+        ans = {"row": 4, "targets": th, "alternative": 2, "changed": ["Clndrs", "Volume", "Model"]}
+        m, fab, ok = E.fix_metrics(self.cars, "fix_targets", ans)
+        goals = self.cars.goals()
+        meets = lambda x: sum(w * self.cars.value(x, g) >= w * th[g] for g, w in goals)
+        self.assertEqual((m["targets_met_reference"], m["targets_met_candidate"]), (meets(4), meets(2)))
+        cands = [x for x in range(1, 9) if x != 4 and meets(x) > meets(4)]
+        diff = lambda x: sum(self.cars.value(4, k) != self.cars.value(x, k) for k in self.cars.inputs())
+        self.assertEqual(m["min_changes"], min(diff(x) for x in cands))
+        self.assertEqual(m["excess_changes"], diff(2) - m["min_changes"])
+        self.assertEqual(ok, m["excess_changes"] == 0)
+        self.assertTrue(m["changes_listed_correctly"])
+
+    def test_targets_out_of_range_fail(self):
+        ans = {"row": 4, "targets": {"Lbs-": 1, "Acc+": 15, "Mpg+": 25}, "alternative": 2, "changed": []}
+        m, _, ok = E.fix_metrics(self.cars, "fix_targets", ans)
+        self.assertFalse(m["target_valid"])
+        self.assertFalse(ok)
+
+    def test_observed_improvement_and_best_possible(self):
+        ans = {"row": 8, "alternative": 4, "changes": {"c": [1, 0]}, "performance": {"before": 800, "after": 400}}
+        m, fab, ok = E.fix_metrics(self.ap, "fix_observed", ans)
+        self.assertEqual((m["observed_improvement"], m["n_changes"], fab), (400, 1, 0))
+        self.assertEqual(m["best_possible_improvement"], 800 - 200)    # rows 1-2 settings from row 8: best is 200
+        self.assertAlmostEqual(m["improvement_captured"], 400 / 600)
+        self.assertTrue(m["reported_before_matches"] and m["reported_after_matches"])
+        self.assertTrue(ok)
+
+    def test_zero_improvement_and_zero_denominator(self):
+        ans = {"row": 1, "alternative": 2, "changes": {"a": [0, 1]}, "performance": {"before": 100, "after": 90}}
+        m, _, ok = E.fix_metrics(self.ap, "fix_observed", ans)
+        self.assertEqual(m["best_possible_improvement"], -100)          # nothing near row 1 is faster
+        self.assertEqual(m["improvement_captured"], "")
+        self.assertFalse(ok)                                              # worse, and row 1 is not poor
+        self.assertFalse(m["reported_after_matches"])                     # the program's 90 is not trusted
+        same = _data("base,a,Performance-\n1,0,500\n1,1,500\n1,0,100\n")
+        m, _, ok = E.fix_metrics(same, "fix_observed", {"row": 1, "alternative": 2, "changes": {"a": [0, 1]},
+                                                         "performance": {"before": 500, "after": 500}})
+        self.assertEqual(m["observed_improvement"], 0)
+        self.assertFalse(ok)
+
+    def test_target_gap_and_minimum(self):
+        ans = {"row": 8, "target": 150, "alternative": 1, "changed": ["a", "b", "c"]}
+        m, _, ok = E.fix_metrics(self.ap, "fix_target", ans)
+        self.assertEqual((m["gap_reference"], m["gap_candidate"], m["gap_reduction"]), (650, 50, 600))
+        self.assertEqual(m["min_changes"], 1)                            # row 4 (400) is closer and 1 setting away
+        self.assertEqual(m["excess_changes"], 2)
+        self.assertFalse(ok)
+        m, _, ok = E.fix_metrics(self.ap, "fix_target", dict(ans, alternative=4, changed=["c"]))
+        self.assertTrue(ok)
+
+    def test_target_worse_than_row_is_invalid(self):
+        m, _, ok = E.fix_metrics(self.ap, "fix_target", {"row": 8, "target": 900, "alternative": 7, "changed": ["a"]})
+        self.assertFalse(m["target_valid"])
+        self.assertFalse(ok)
+
+    def test_nasa_kinds_rejected(self):
+        with self.assertRaises(ValueError):
+            E.fix_metrics(self.cars, "fix_predicted", {})
+
+
+class TestFixExtract(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        tmp = Path(cls.tmp.name)
+        cars = O.load(E.DATA_DIR / "auto93.csv")
+        s = O.d2h(cars)
+        worst = max(s, key=s.get)
+        near = O.XSpace(cars).nearest(worst, 0.25)
+        alt = min((r for r in near if s[r] < s[worst]), key=s.get)
+        col = next(k for k in cars.inputs() if cars.value(worst, k) != cars.value(alt, k))
+        good = json.dumps({"row": worst, "alternatives": [{"row": alt, "changes": {col: [cars.value(worst, col),
+                                                                                       cars.value(alt, col)]}}]})
+        fake = json.dumps({"row": worst, "alternatives": [{"row": alt, "changes": {col: [-1, cars.value(alt, col)]}}]})
+        scen = {("T1", 1): ("ok", check_txt(f"ANSWER CAR-15 {good}")), ("T1", 2): ("ok", check_txt(f"ANSWER CAR-15 {fake}")),
+                ("T1", 3): ("ok", check_txt(f"ANSWER CAR-15 {good}", runs=False)), ("T2", 1): ("parse_failed", None),
+                ("T2", 2): ("ok", check_txt("ANSWER CAR-15 {\"row\": 1}")), ("T2", 3): ("ok", check_txt("nothing"))}
+        cls.archive, cls.runs, cls.reqs = tmp / "z.zip", tmp / "runs.csv", tmp / "req.csv"
+        sem = json.dumps({"status": "pass", "runs": {"base": "ran", "shuffled": "ran"},
+                          "requests": [{"request_id": r, "status": "pass", "failed": [], "notes": []}
+                                       for r in ("CAR-15", "CAR-16")]})
+        with zipfile.ZipFile(cls.archive, "w") as z:
+            for (t, k), (st, chk) in scen.items():
+                if chk:
+                    z.writestr(E.entry_name(ROOT, MODEL, "cars", t, k, 8, "check.txt"), chk)
+                    z.writestr(E.entry_name(ROOT, MODEL, "cars", t, k, 8, "semantic.json"), sem)
+        cls.runs.write_text("model,domain,treatment,trial,skill_index,status,runs,semantic\n" + "".join(
+            f"{MODEL},cars,{t},{k},8,{st},True,pass\n" for (t, k), (st, _) in scen.items()))
+        cls.reqs.write_text("model,domain,treatment,trial,request_id,status\n" + "".join(
+            f"{MODEL},cars,{t},{k},{r},pass\n" for (t, k) in scen for r in ("CAR-15", "CAR-16")))
+        cls.before = sha(cls.archive)
+        cls.rows = E.extract_fix(cls.archive, cls.runs, cls.reqs, E.DATA_DIR, domains=("cars",))
+        cls.by = {(r["treatment"], r["trial"], r["request_id"]): r for r in cls.rows}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_all_attempts_kept(self):
+        self.assertEqual(len(self.rows), 36)                             # 2 requests x 6 treatments x 3 trials
+        self.assertEqual(len(self.by), 36)
+
+    def test_outcomes(self):
+        want = {("T1", 1): "", ("T1", 2): "fabricated_values", ("T1", 3): "execution_failure",
+                ("T2", 1): "generation_failed", ("T2", 2): "answer_schema_error", ("T2", 3): "answer_missing",
+                ("T3", 1): "not_attempted"}
+        for (t, k), reason in want.items():
+            r = self.by[(t, k, "CAR-15")]
+            self.assertEqual(r["exclusion_reason"], reason, (t, k))
+            self.assertEqual(r["primary"], reason == "", (t, k))
+            if reason:
+                self.assertFalse(r["success"], (t, k))
+        self.assertTrue(self.by[("T1", 1, "CAR-15")]["success"])
+        self.assertEqual(self.by[("T1", 2, "CAR-15")]["fabricated_values"], 1)
+
+    def test_summary_counts_only_successes(self):
+        s = {(x["scope"], x["treatment"], x["request_id"]): x for x in E.summarize_fix(self.rows)}
+        t1 = s[("domain_treatment", "T1", "CAR-15")]
+        self.assertEqual((t1["attempted"], t1["executable"], t1["schema_valid"], t1["integrity_valid"],
+                          t1["successful"]), (3, 2, 2, 1, 1))
+        self.assertAlmostEqual(t1["delivery_rate"], 1 / 3)
+        t2 = s[("domain_treatment", "T2", "CAR-15")]
+        self.assertEqual((t2["integrity_valid"], t2["successful"], t2["conditional_success_rate"]), (0, 0, ""))
+
+    def test_archive_untouched(self):
+        self.assertEqual(sha(self.archive), self.before)
+
+
+class TestFixRealArchive(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.before = sha(E.ARCHIVE)
+        cls.rows = E.extract_fix()
+        cls.again = E.extract_fix()
+
+    def test_all_attempts(self):
+        self.assertEqual(len(self.rows), 108)
+        self.assertEqual(len({(r["domain"], r["treatment"], r["trial"], r["request_id"]) for r in self.rows}), 108)
+
+    def test_nasa_not_measurable(self):
+        nasa = [r for r in self.rows if r["domain"] == "nasa"]
+        self.assertEqual(len(nasa), 36)
+        for r in nasa:
+            self.assertFalse(r["measurable"] or r["primary"] or r["success"])
+            self.assertIn("not independently measurable", r["notes"])
+            self.assertEqual(r["observed_improvement"], "")
+
+    def test_agrees_with_frozen_checker(self):
+        z = zipfile.ZipFile(E.ARCHIVE)
+        for r in self.rows:
+            if not r["primary"]:
+                continue
+            data = O.load(E.DATA_DIR / E.DATASETS[r["domain"]])
+            ans = A.parse_answers(E.split_check(z.read(r["check_entry"]).decode())[1])[r["request_id"]]
+            items = {n.split(":", 1)[1]: ok for n, ok, _ in A.check_request(r["request_id"], data, ans).items}
+            if r["kind"] in ("fix_targets", "fix_target") and "fewest changes" in items:
+                self.assertEqual(items["fewest changes"], r["excess_changes"] == 0, r["request_id"])
+            if r["kind"] == "fix_observed":
+                self.assertEqual(items["alternative really is better"], r["observed_improvement"] > 0)
+            if r["success"]:
+                self.assertEqual(r["fabricated_values"], 0)
+
+    def test_success_implies_valid(self):
+        for r in self.rows:
+            if r["success"]:
+                self.assertTrue(r["primary"] and r["integrity_valid"] and r["measurable"])
+
+    def test_reproducible_and_untouched(self):
+        self.assertEqual(self.rows, self.again)
+        self.assertEqual(sha(E.ARCHIVE), self.before)
 
 
 if __name__ == "__main__":

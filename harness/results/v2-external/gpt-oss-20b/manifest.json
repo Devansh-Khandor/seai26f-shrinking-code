@@ -1,7 +1,7 @@
 {
-  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; phase 3: Race (guided vs random selection, model vs historical-mean prediction); phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters",
+  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; phase 3: Race (guided vs random selection, model vs historical-mean prediction); phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters; phase 4C: Cars T7 prediction adapters; phase 5C: Fix observed alternatives (Cars, Apache)",
   "status": "post-observation (added after the Task Talk; not pre-registered)",
-  "generated_utc": "2026-11-25T06:41:58+00:00",
+  "generated_utc": "2026-11-25T07:11:19+00:00",
   "command": "python -m harness.external",
   "model": "gpt-oss-20b",
   "protocol": {
@@ -187,6 +187,32 @@
         "apache": "standalone human-directed modules (human_t7/apache)"
       },
       "evaluated_requests": "NASA/Apache: both requests of the step; Cars: the prediction request only"
+    },
+    "fix": {
+      "status": "post-hoc (added after the Task Talk); every rule below is an analysis choice unless it quotes the frozen checker",
+      "requests": {
+        "cars": [
+          "CAR-15",
+          "CAR-16"
+        ],
+        "nasa": [
+          "NASA-15",
+          "NASA-16"
+        ],
+        "apache": [
+          "APACHE-15",
+          "APACHE-16"
+        ]
+      },
+      "nature": "all four measurable requests pick an EXISTING row of the CSV as the alternative; the improvement is the difference between two recorded rows, not the effect of changing a vehicle or server",
+      "visibility": "Fix is retrospective: every goal value is visible to the program by design, so there is no hidden target and no leakage gate; only the shuffled rerun applies (recorded, not gating)",
+      "integrity_valid": "ran; ANSWER accepted by harness.answers.check_request; every cited [from, to] cell value matches the file (no fabricated values)",
+      "CAR-15": "score = harness.oracle.d2h (lower is better). observed_improvement = d2h(row) - d2h(best listed alternative). similar = among the 25% most similar rows (harness.oracle.XSpace.nearest, the frozen check). success = row in the worse half by d2h and >= 1 listed alternative both better by d2h and similar",
+      "CAR-16": "targets are the program's own thresholds (frozen format). success = targets within the observed range, the row misses >= 1 target, the alternative meets more targets, and it changes no more input columns than the minimum over all rows meeting more targets (min_changes, computed from the CSV)",
+      "APACHE-15": "observed_improvement = Performance-(row) - Performance-(alternative) (positive = faster). best_possible_improvement = the largest such improvement over rows differing in 1-2 settings; improvement_captured = observed / best possible (blank when the best possible is <= 0). success = row in the worse half, alternative differs in 1-2 settings, observed_improvement > 0",
+      "APACHE-16": "target is the program's own value (frozen format). gap_reduction = |row - target| - |alternative - target|. success = target better than the row and in range, alternative closer to it, and no more changed settings than the minimum over all rows closer to the target",
+      "NASA-15/16": "not independently measurable: NASA-15/16 answers report predicted effort/defects after a hypothetical change; no observed outcome exists for the changed project, so the improvement cannot be verified",
+      "reported_values": "APACHE-15 performance.before/after are compared with the recorded values, never used"
     }
   },
   "inputs": {
@@ -229,8 +255,8 @@
     "code": {
       "external": {
         "path": "harness/external.py",
-        "sha256": "306adfe372ea4747d823e97058ce40c6cb5bbf868843024c70828e6e5f59c845",
-        "bytes": 106162
+        "sha256": "bd4cfd3e7cdbdf4c6f33332979c9f151a964139edfacf78430aea88271213a0f",
+        "bytes": 129784
       },
       "answers": {
         "path": "harness/answers.py",
@@ -372,7 +398,7 @@
     }
   },
   "git": {
-    "commit": "6e91f8bc682873d83705b476f40a9199922f9e6d",
+    "commit": "6ec26a85031cf212fca12284e855c9a745e2e3a8",
     "branch": "analysis/external-metrics",
     "dirty": true
   },
@@ -389,7 +415,7 @@
       "sha256": "bfdf4537a3c13346996dbd2b9c6499ec6e5da58424e4827ca37ee7b8a7b222cd"
     },
     "prediction_report.md": {
-      "sha256": "504e914bd2dd3c9810bd3292e5bcfd105f816ac44dd4eef59d3ad30f7ee46e2f"
+      "sha256": "f8ca11cc588e08d53d012d3cc9f72f17f9ca3789bcda490502d3dca655c375ab"
     },
     "selection_quality.csv": {
       "sha256": "35479bc46e332515390b91ffe682fe249924012c89835ab9633f249db6a65dda"
@@ -398,7 +424,7 @@
       "sha256": "3ecb40ca54175f50950b4ed8150d1ef79bf83a3eaded5591c8f59596f90fcfb0"
     },
     "selection_report.md": {
-      "sha256": "6236984de61e5bedf6fcd8bff24c90d7b463bf799c4dd276c22785175559f7a4"
+      "sha256": "fc98cfd899d366a97071413ceb1f3b4874225223399694f9ed999614079995e7"
     },
     "race_selection.csv": {
       "sha256": "48487d69d56add1df70a6fd99aba8f5b56da4d4a272d9824fd6227f8bf08ca31"
@@ -410,13 +436,22 @@
       "sha256": "97b8d2880665321a8aa278ebd11e4b12d2dc546e3291fd87a1bae7cc6d0cc9b9"
     },
     "race_report.md": {
-      "sha256": "d085ad7656e73f0adce66edfde388c0e7b01ce956a62dd33bc749f01c69552aa"
+      "sha256": "b455a480d3f731d9074a81ddc019494acc73a73cdcbe1eb1c974091cdf305aaa"
     },
     "t7_prediction.csv": {
       "sha256": "5a571583769304a7996d28ab319cb9a4e5d45fafc1e3aaae328c324b9ef71034"
     },
     "t7_prediction_report.md": {
-      "sha256": "e83d856bc45e28f7433f377fa6412edae189f33e97e1353379356a4f409144b8"
+      "sha256": "508ccd7c5b37ca04c1ff882aa1fc42c8a6ac69cf1bd5157d1be4922c2c0741eb"
+    },
+    "fix_quality.csv": {
+      "sha256": "1dcaee78d75cba27291c10c2d8b7f50383110671092d4c318fdb4c8f6acd90a1"
+    },
+    "fix_summary.csv": {
+      "sha256": "9068946bc2a3c65d963cdff7b4d450ace7dfd2332bee6a30ba7234b54affce92"
+    },
+    "fix_report.md": {
+      "sha256": "0690690f0ae2edecc22f8d921d568737c52c4aa9b449bd5f740130e86927d912"
     }
   }
 }

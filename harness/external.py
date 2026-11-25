@@ -889,6 +889,357 @@ def summarize_race(sel_rows, pred_rows):
     return out
 
 
+# ---- phase 5C: Fix (skill 8), observed alternatives only -----------------------------
+
+FIX_STEP = 8
+FIX = {
+    "cars": ("CAR-15", "CAR-16"),
+    "nasa": ("NASA-15", "NASA-16"),
+    "apache": ("APACHE-15", "APACHE-16"),
+}
+FIX_MEASURABLE = {"fix_alternatives", "fix_targets", "fix_observed", "fix_target"}
+NASA_FIX_NOTE = ("not independently measurable: NASA-15/16 answers report predicted effort/defects after a hypothetical "
+                 "change; no observed outcome exists for the changed project, so the improvement cannot be verified")
+
+FIX_FIELDS = [
+    "model", "domain", "treatment", "trial", "skill_index", "request_id", "kind", "measurable",
+    "step_status", "step_runs", "step_semantic", "request_status",
+    "check_runs", "check_timed_out", "answer_state", "answer_detail", "shuffled_gate",
+    "fabricated_values", "integrity_valid",
+    "score", "reference_row", "reference_score", "reference_poor",
+    "candidate_row", "candidate_score", "observed_improvement", "relative_improvement",
+    "n_alternatives", "n_alternatives_better", "n_alternatives_similar", "n_alternatives_better_and_similar",
+    "targets_met_reference", "targets_met_candidate", "target_value", "target_valid",
+    "gap_reference", "gap_candidate", "gap_reduction",
+    "n_changes", "min_changes", "excess_changes", "changes_listed_correctly",
+    "best_possible_improvement", "improvement_captured",
+    "reported_before", "reported_after", "reported_before_matches", "reported_after_matches",
+    "success", "primary", "exclusion_reason", "notes",
+    "check_entry", "check_crc32", "check_sha256", "semantic_entry", "semantic_sha256",
+]
+
+FIX_PROTOCOL = {
+    "status": "post-hoc (added after the Task Talk); every rule below is an analysis choice unless it quotes the frozen "
+              "checker",
+    "requests": {d: list(v) for d, v in FIX.items()},
+    "nature": "all four measurable requests pick an EXISTING row of the CSV as the alternative; the improvement is the "
+              "difference between two recorded rows, not the effect of changing a vehicle or server",
+    "visibility": "Fix is retrospective: every goal value is visible to the program by design, so there is no hidden "
+                  "target and no leakage gate; only the shuffled rerun applies (recorded, not gating)",
+    "integrity_valid": "ran; ANSWER accepted by harness.answers.check_request; every cited [from, to] cell value matches "
+                       "the file (no fabricated values)",
+    "CAR-15": "score = harness.oracle.d2h (lower is better). observed_improvement = d2h(row) - d2h(best listed "
+              "alternative). similar = among the 25% most similar rows (harness.oracle.XSpace.nearest, the frozen "
+              "check). success = row in the worse half by d2h and >= 1 listed alternative both better by d2h and similar",
+    "CAR-16": "targets are the program's own thresholds (frozen format). success = targets within the observed range, "
+              "the row misses >= 1 target, the alternative meets more targets, and it changes no more input columns "
+              "than the minimum over all rows meeting more targets (min_changes, computed from the CSV)",
+    "APACHE-15": "observed_improvement = Performance-(row) - Performance-(alternative) (positive = faster). "
+                 "best_possible_improvement = the largest such improvement over rows differing in 1-2 settings; "
+                 "improvement_captured = observed / best possible (blank when the best possible is <= 0). success = row "
+                 "in the worse half, alternative differs in 1-2 settings, observed_improvement > 0",
+    "APACHE-16": "target is the program's own value (frozen format). gap_reduction = |row - target| - |alternative - "
+                 "target|. success = target better than the row and in range, alternative closer to it, and no more "
+                 "changed settings than the minimum over all rows closer to the target",
+    "NASA-15/16": NASA_FIX_NOTE,
+    "reported_values": "APACHE-15 performance.before/after are compared with the recorded values, never used",
+}
+
+
+def _diff_inputs(data, a, b):
+    return {k for k in data.inputs() if data.value(a, k) != data.value(b, k)}
+
+
+def _fabricated(data, src, dst, changes):
+    """Cited [from, to] values that do not match the CSV ('to' checked only when DST is given)."""
+    bad = 0
+    for k, v in changes.items():
+        k = k.strip()
+        bad += not A.same_cell(data, src, k, v[0])
+        if dst is not None:
+            bad += not A.same_cell(data, dst, k, v[1])
+    return bad
+
+
+def fix_metrics(data, kind, ans):
+    """Independent metrics for one schema-valid Fix answer. Returns (metrics, fabricated, success)."""
+    m = {}
+    if kind == "fix_alternatives":
+        s = O.d2h(data)
+        r = A.row(data, ans["row"])
+        near = O.XSpace(data).nearest(r, 0.25)
+        alts = [A.row(data, e["row"], "alternative") for e in ans["alternatives"]]
+        fab = sum(_fabricated(data, r, a, e["changes"]) for a, e in zip(alts, ans["alternatives"]))
+        best = min(alts, key=lambda a: (s[a], alts.index(a)))
+        better = [a for a in alts if s[a] < s[r]]
+        good = [a for a in better if a in near]
+        poor = s[r] > O.median(list(s.values()))
+        m.update(score="d2h", reference_row=r, reference_score=s[r], reference_poor=poor, candidate_row=best,
+                 candidate_score=s[best], observed_improvement=s[r] - s[best],
+                 relative_improvement=(s[r] - s[best]) / s[r] if s[r] else "",
+                 n_alternatives=len(alts), n_alternatives_better=len(better),
+                 n_alternatives_similar=sum(a in near for a in alts), n_alternatives_better_and_similar=len(good),
+                 n_changes=len(_diff_inputs(data, r, best)))
+        return m, fab, poor and bool(good)
+    if kind == "fix_targets":
+        s = O.d2h(data)
+        goals = data.goals()
+        r, a = A.row(data, ans["row"]), A.row(data, ans["alternative"], "alternative")
+        th = {g: A.num(ans["targets"][g]) for g, _ in goals}
+        in_range = all(min(data.values(g)) <= th[g] <= max(data.values(g)) for g, _ in goals)
+        meets = lambda x: sum(w * data.value(x, g) >= w * th[g] for g, w in goals)
+        cands = [x for x in range(1, data.n + 1) if x != r and meets(x) > meets(r)]
+        least = min(len(_diff_inputs(data, r, x)) for x in cands) if cands else None
+        nch = len(_diff_inputs(data, r, a))
+        said = {c.strip() for c in ans["changed"]}
+        m.update(score="targets met (program's thresholds); d2h shown for context", reference_row=r,
+                 reference_score=s[r], candidate_row=a, candidate_score=s[a], observed_improvement=s[r] - s[a],
+                 targets_met_reference=meets(r), targets_met_candidate=meets(a), target_valid=in_range,
+                 n_changes=nch, min_changes="" if least is None else least,
+                 excess_changes="" if least is None else nch - least,
+                 changes_listed_correctly=said == _diff_inputs(data, r, a))
+        ok = (in_range and meets(r) < len(goals) and meets(a) > meets(r) and least is not None and nch == least)
+        return m, 0, ok
+    t = next(g for g, _ in data.goals())                     # Apache has one goal, Performance- (minimize)
+    worse = lambda a, b: O.worse(data, t, a, b)
+    med = O.median(data.values(t))
+    if kind == "fix_observed":
+        r, a = A.row(data, ans["row"]), A.row(data, ans["alternative"], "alternative")
+        fab = _fabricated(data, r, a, ans["changes"])
+        d = _diff_inputs(data, r, a)
+        imp = data.value(r, t) - data.value(a, t)
+        small = [x for x in range(1, data.n + 1) if x != r and 1 <= len(_diff_inputs(data, r, x)) <= 2]
+        best = max((data.value(r, t) - data.value(x, t) for x in small), default=None)
+        rb, ra = A.num(ans["performance"]["before"]), A.num(ans["performance"]["after"])
+        poor = worse(data.value(r, t), med)
+        m.update(score=t, reference_row=r, reference_score=data.value(r, t), reference_poor=poor, candidate_row=a,
+                 candidate_score=data.value(a, t), observed_improvement=imp,
+                 relative_improvement=imp / data.value(r, t) if data.value(r, t) else "",
+                 n_changes=len(d), changes_listed_correctly={c.strip() for c in ans["changes"]} == d,
+                 best_possible_improvement="" if best is None else best,
+                 improvement_captured=imp / best if best is not None and best > 0 else "",
+                 reported_before=rb, reported_after=ra,
+                 reported_before_matches=O.close(rb, data.value(r, t)), reported_after_matches=O.close(ra, data.value(a, t)))
+        return m, fab, poor and 1 <= len(d) <= 2 and imp > 0
+    if kind == "fix_target":
+        r, a = A.row(data, ans["row"]), A.row(data, ans["alternative"], "alternative")
+        tv = A.num(ans["target"])
+        vs = data.values(t)
+        gap = lambda x: abs(data.value(x, t) - tv)
+        valid = worse(data.value(r, t), tv) and min(vs) <= tv <= max(vs)
+        cands = [x for x in range(1, data.n + 1) if gap(x) < gap(r)]
+        least = min(len(_diff_inputs(data, r, x)) for x in cands) if cands else None
+        nch = len(_diff_inputs(data, r, a))
+        imp = data.value(r, t) - data.value(a, t)
+        m.update(score=f"distance to the program's {t} target", reference_row=r, reference_score=data.value(r, t),
+                 reference_poor=worse(data.value(r, t), med), candidate_row=a, candidate_score=data.value(a, t),
+                 observed_improvement=imp, target_value=tv, target_valid=valid, gap_reference=gap(r),
+                 gap_candidate=gap(a), gap_reduction=gap(r) - gap(a), n_changes=nch,
+                 min_changes="" if least is None else least, excess_changes="" if least is None else nch - least,
+                 changes_listed_correctly={c.strip() for c in ans["changed"]} == _diff_inputs(data, r, a))
+        ok = (valid and worse(data.value(r, t), med) and gap(a) < gap(r) and least is not None and nch == least)
+        return m, 0, ok
+    raise ValueError(f"not an observed-alternative Fix kind: {kind}")
+
+
+def _fix_row(z, names, root, model, domain, t, k, rid, data, runs, reqs):
+    kind = A.REQUESTS[rid][0]
+    measurable = kind in FIX_MEASURABLE
+    row, ctx, ans, sem = _attempt(z, names, root, model, domain, t, k, FIX_STEP, rid, data, runs, reqs, FIX_FIELDS,
+                                  dict(kind=kind, measurable=measurable, shuffled_gate="not_run",
+                                       integrity_valid=False, success=False))
+    if ctx is not None:
+        row["shuffled_gate"] = shuffled_gate(sem, rid)
+    if not measurable:
+        row["notes"] = NASA_FIX_NOTE
+        if ctx is not None:
+            row["exclusion_reason"] = "not_independently_measurable"
+        return row
+    if ctx is None:
+        return row
+    m, fab, ok = fix_metrics(data, kind, ans)
+    row.update(m)
+    row["fabricated_values"] = fab
+    if fab:
+        row["exclusion_reason"] = "fabricated_values"
+        return row
+    row.update(integrity_valid=True, primary=True, success=ok)
+    return row
+
+
+def extract_fix(archive=ARCHIVE, runs_csv=RUNS_CSV, requirements_csv=REQUIREMENTS_CSV, data_dir=DATA_DIR,
+                model=MODEL, domains=DOMAINS):
+    """One row per attempted (domain, treatment, trial, request) for the two Fix requests of every domain."""
+    runs = _index(runs_csv, ("model", "domain", "treatment", "trial", "skill_index"))
+    reqs = _index(requirements_csv, ("model", "domain", "treatment", "trial", "request_id"))
+    rows = []
+    with zipfile.ZipFile(archive) as z:
+        names = set(z.namelist())
+        root = archive_root(names, model)
+        for domain in domains:
+            if set(FIX[domain]) != set(request_ids(domain, FIX_STEP)):
+                raise ValueError(f"{FIX[domain]} are not the frozen Fix requests of {domain}")
+            data = O.load(Path(data_dir) / DATASETS[domain])
+            for rid in FIX[domain]:
+                for t in TREATMENTS:
+                    for k in TRIALS:
+                        rows.append(_fix_row(z, names, root, model, domain, t, k, rid, data, runs, reqs))
+    keys = [(r["domain"], r["treatment"], r["trial"], r["request_id"]) for r in rows]
+    if len(keys) != len(set(keys)):
+        raise ValueError("duplicate trial records")
+    return rows
+
+
+FIX_SUMMARY_FIELDS = [
+    "scope", "domain", "treatment", "request_id", "measurable",
+    "attempted", "executable", "schema_valid", "integrity_valid", "successful",
+    "generation_failed", "execution_failed", "answer_missing", "answer_invalid_json", "answer_schema_error",
+    "fabricated_values", "shuffled_failed_among_valid", "delivery_rate", "conditional_success_rate",
+    "median_observed_improvement", "median_relative_improvement", "median_excess_changes",
+    "median_improvement_captured", "median_gap_reduction",
+]
+
+
+def _fix_cell(scope, domain, treatment, rid, sel):
+    prim = [r for r in sel if r["primary"]]
+    succ = sum(bool(r["success"]) for r in prim)
+    reasons = [r["exclusion_reason"] for r in sel]
+    measurable = all(r["measurable"] for r in sel)
+    return {
+        "scope": scope, "domain": domain, "treatment": treatment, "request_id": rid, "measurable": measurable,
+        "attempted": len(sel), "executable": sum(r["check_runs"] is True for r in sel),
+        "schema_valid": sum(r["answer_state"] == "valid" for r in sel), "integrity_valid": len(prim),
+        "successful": succ if measurable else "",
+        "generation_failed": reasons.count("generation_failed") + reasons.count("not_attempted"),
+        "execution_failed": reasons.count("execution_failure") + reasons.count("execution_timeout"),
+        "answer_missing": reasons.count("answer_missing"), "answer_invalid_json": reasons.count("answer_invalid_json"),
+        "answer_schema_error": reasons.count("answer_schema_error"), "fabricated_values": reasons.count("fabricated_values"),
+        "shuffled_failed_among_valid": sum(r["shuffled_gate"] == "fail" for r in sel if r["answer_state"] == "valid"),
+        "delivery_rate": _rate(succ, len(sel)) if measurable else "",
+        "conditional_success_rate": _rate(succ, len(prim)) if measurable else "",
+        "median_observed_improvement": _med([r["observed_improvement"] for r in prim]),
+        "median_relative_improvement": _med([r["relative_improvement"] for r in prim]),
+        "median_excess_changes": _med([r["excess_changes"] for r in prim]),
+        "median_improvement_captured": _med([r["improvement_captured"] for r in prim]),
+        "median_gap_reduction": _med([r["gap_reduction"] for r in prim]),
+    }
+
+
+def summarize_fix(rows):
+    out = []
+    for d in DOMAINS:
+        for rid in FIX[d]:
+            for t in TREATMENTS:
+                sel = [r for r in rows if r["domain"] == d and r["treatment"] == t and r["request_id"] == rid]
+                if sel:
+                    out.append(_fix_cell("domain_treatment", d, t, rid, sel))
+            sel = [r for r in rows if r["domain"] == d and r["request_id"] == rid]
+            if sel:
+                out.append(_fix_cell("domain", d, "all", rid, sel))
+    return out
+
+
+def fix_report(rows, summary, manifest):
+    cells = [s for s in summary if s["scope"] == "domain_treatment"]
+    imp_label = {"CAR-15": "Δd2h", "CAR-16": "Δd2h (context)", "APACHE-15": "Δ Performance-", "APACHE-16": "gap reduction"}
+    lines = [
+        "# External metric, phase 5C: Fix — do the suggested alternatives really do better?",
+        "",
+        "**Status: post-observation analysis.** Added after the Task Talk; not part of the pre-registered plan in "
+        "`docs/hypotheses.md`. Every success rule below is an analysis choice unless it repeats a frozen checker rule.",
+        "",
+        "**What is measured — and what is not.** All four measurable requests answer with an **existing row** of the "
+        "CSV as the alternative. The improvement is therefore the difference between two *recorded* vehicles or "
+        "configurations. It shows that a better observed option with the stated differences exists; it is **not** "
+        "evidence that changing a real vehicle or server in that way would produce the improvement.",
+        "",
+        "**Visibility.** Fix is retrospective: the program may see every goal value. There is no hidden target, so "
+        "no leakage gate applies; the shuffled rerun is recorded but does not gate. Integrity here means the answer "
+        "parses, passes the frozen format check, and cites only values that are really in the file.",
+        "",
+        "## Metric definitions",
+        "",
+        "| request | frozen task | improvement | success (post-hoc unless noted) |",
+        "|---|---|---|---|",
+        "| CAR-15 | similar vehicles with better recorded performance | d2h(row) − d2h(best listed alternative); "
+        "lower d2h is better | row in the worse half by d2h, and ≥ 1 listed alternative is better by d2h **and** among "
+        "the 25% most similar rows (the frozen similarity rule) |",
+        "| CAR-16 | closest alternative meeting more preferred targets, fewest changes | targets met (row → "
+        "alternative) under the program's own thresholds; d2h change shown for context | thresholds in the observed "
+        "range, row misses ≥ 1, alternative meets more, and it changes no more input columns than the minimum over "
+        "all rows that meet more (computed from the CSV) |",
+        "| APACHE-15 | a small setting change with lower performance | Performance-(row) − Performance-(alternative); "
+        "share of the best improvement available among rows 1–2 settings away | row in the worse half, alternative "
+        "1–2 settings away, improvement > 0 |",
+        "| APACHE-16 | fewest setting changes toward a performance target | \\|row − target\\| − \\|alternative − "
+        "target\\| (program's own target) | target better than the row and in range, alternative closer, and no more "
+        "changed settings than the minimum over all rows closer to the target |",
+        "| NASA-15/16 | changes that reduce *predicted* effort/defects | — | **not independently measurable**: the "
+        "answer is a hypothetical change with a predicted outcome; no observed outcome exists to check it |",
+        "",
+        "## Results by domain, treatment and request",
+        "",
+        "Each cell has 3 attempted trials. Medians are over integrity-valid trials. \"—\" = no value.",
+        "",
+        "| domain | T | request | attempted | executable | schema valid | integrity valid | successful | delivery "
+        "rate | median improvement | median excess changes | median share of best captured |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for s in cells:
+        if not s["measurable"]:
+            lines.append(f"| {s['domain']} | {s['treatment']} | {s['request_id']} | {s['attempted']} | {s['executable']} | "
+                         f"{s['schema_valid']} | — | not measurable | — | — | — | — |")
+            continue
+        imp = s["median_gap_reduction"] if s["request_id"] == "APACHE-16" else s["median_observed_improvement"]
+        lines.append(
+            f"| {s['domain']} | {s['treatment']} | {s['request_id']} | {s['attempted']} | {s['executable']} | "
+            f"{s['schema_valid']} | {s['integrity_valid']} | {s['successful']} | {_pct(s['delivery_rate'])} | "
+            f"{_num(imp, '.3f' if s['domain'] == 'cars' else '.1f')} | {_num(s['median_excess_changes'], '.1f')} | "
+            f"{_num(s['median_improvement_captured'], '.2f')} |")
+    lines += ["", "Improvement units: " + "; ".join(f"{k}: {v}" for k, v in imp_label.items()) + ".", "",
+              "## By domain and request", "",
+              "| domain | request | attempted | executable | schema valid | integrity valid | successful | delivery rate "
+              "| conditional success | fabricated values | shuffled failures (valid) |",
+              "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    for s in [s for s in summary if s["scope"] == "domain"]:
+        lines.append(f"| {s['domain']} | {s['request_id']} | {s['attempted']} | {s['executable']} | {s['schema_valid']} | "
+                     f"{s['integrity_valid'] if s['measurable'] else '—'} | "
+                     f"{s['successful'] if s['measurable'] else 'not measurable'} | {_pct(s['delivery_rate'])} | "
+                     f"{_pct(s['conditional_success_rate'])} | {s['fabricated_values']} | "
+                     f"{s['shuffled_failed_among_valid']} |")
+    lines += ["", "## Per-trial values", "",
+              "| domain | T | trial | request | outcome | reference row | candidate row | improvement | changes | "
+              "minimum | success |", "|---|---|---:|---|---|---:|---:|---:|---:|---:|---|"]
+    for r in rows:
+        if not r["measurable"]:
+            continue
+        imp = r["gap_reduction"] if r["request_id"] == "APACHE-16" else r["observed_improvement"]
+        lines.append(f"| {r['domain']} | {r['treatment']} | {r['trial']} | {r['request_id']} | "
+                     f"{r['exclusion_reason'] or 'included'} | {r['reference_row'] or '—'} | {r['candidate_row'] or '—'} | "
+                     f"{_num(imp, '.3f')} | {r['n_changes'] if r['n_changes'] != '' else '—'} | "
+                     f"{r['min_changes'] if r['min_changes'] != '' else '—'} | {r['success'] if r['primary'] else '—'} |")
+    lines += [
+        "", "## Limitations", "",
+        "- **Observed alternatives, not interventions.** A better recorded row that differs in a few columns is "
+        "association, not the causal effect of making those changes.",
+        "- **Self-chosen targets.** In CAR-16 and APACHE-16 the program sets its own thresholds or target (frozen "
+        "format). Easy targets make success easier; the target values are in `fix_quality.csv`.",
+        "- **The program picks the reference row.** A program can choose an easy poor row; `reference_poor` and the "
+        "reference values are recorded so this is visible.",
+        "- **d2h is one overall score.** The frozen checker also accepts z-score and rank sums for CAR-15.",
+        "- **Three trials per cell, often fewer usable.** No statistical test is applied.",
+        "- **T7 is not included.** No Cars adapter exists for Fix, and the APACHE-16 T7 adapter optimizes a different "
+        "objective from the original T7 code; it must not be pooled with T1–T6.",
+        "", "## Provenance", "",
+        f"- Archive: `{manifest['inputs']['archive']['path']}` (sha256 `{manifest['inputs']['archive']['sha256']}`)",
+        f"- Code commit: `{manifest['git']['commit']}` on `{manifest['git']['branch']}`"
+        f"{' (uncommitted changes present)' if manifest['git']['dirty'] else ''}",
+        f"- Command: `{manifest['command']}`",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 # ---- phase 4B: T7 prediction through the existing validation adapters ----------------
 
 T7_PROTOCOL = "v2-common: every-fifth-row hold-out, training-mean baseline (t7_validation adapter)"
@@ -1412,7 +1763,8 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
     return {
         "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; "
                     "phase 3: Race (guided vs random selection, model vs historical-mean prediction); "
-                    "phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters",
+                    "phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters; "
+                    "phase 4C: Cars T7 prediction adapters; phase 5C: Fix observed alternatives (Cars, Apache)",
         "status": "post-observation (added after the Task Talk; not pre-registered)",
         "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "command": "python -m harness.external" + (" " + " ".join(argv) if argv else ""),
@@ -1432,6 +1784,7 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
             "selection": SELECTION_PROTOCOL,
             "race": RACE_PROTOCOL,
             "t7_prediction": T7_PREDICTION_PROTOCOL,
+            "fix": FIX_PROTOCOL,
         },
         "inputs": {
             "archive": _file_info(archive),
@@ -1762,7 +2115,7 @@ def race_report(sel_rows, pred_rows, summary, manifest):
     return "\n".join(lines)
 
 
-def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=None, race=None, t7=None):
+def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=None, race=None, t7=None, fix=None):
     out = guard_out(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     files = {
@@ -1788,6 +2141,13 @@ def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=N
         files.update({
             "t7_prediction.csv": to_csv(t7, T7_PREDICTION_FIELDS),
             "t7_prediction_report.md": t7_prediction_report(t7, rows, race[1] if race else [], manifest),
+        })
+    if fix is not None:
+        frows, fsum = fix
+        files.update({
+            "fix_quality.csv": to_csv(frows, FIX_FIELDS),
+            "fix_summary.csv": to_csv(fsum, FIX_SUMMARY_FIELDS),
+            "fix_report.md": fix_report(frows, fsum, manifest),
         })
     for name, text in files.items():
         (out / name).write_text(text, encoding="utf-8")
@@ -1820,12 +2180,15 @@ def main(argv=None):
     rpred = extract_race_prediction(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
     t7 = None if a.skip_t7 else extract_t7_prediction(
         a.data_dir, specs=tuple(x for x in T7_PREDICTION if x[0] in domains))
+    fix = extract_fix(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
     out = write_outputs(a.out, rows, summary, manifest, sel, sel_summary, (rsel, rpred, summarize_race(rsel, rpred)),
-                        t7)
+                        t7, (fix, summarize_fix(fix)))
     print(f"prediction: {len(rows)} attempts, {sum(r['primary'] for r in rows)} in the primary metric")
     print(f"selection:  {len(sel)} attempts, {sum(r['primary'] for r in sel)} in the primary metric")
     print(f"race selection:  {len(rsel)} attempts, {sum(r['primary'] for r in rsel)} in the primary metric")
     print(f"race prediction: {len(rpred)} attempts, {sum(r['primary'] for r in rpred)} in the primary metric")
+    print(f"fix:             {len(fix)} attempts, {sum(r['primary'] for r in fix)} integrity-valid, "
+          f"{sum(bool(r['success']) for r in fix)} successful")
     if t7 is not None:
         print(f"T7 prediction:   {len(t7)} requests, {sum(r['primary'] for r in t7)} in the primary metric")
     print(f"wrote {out}")
