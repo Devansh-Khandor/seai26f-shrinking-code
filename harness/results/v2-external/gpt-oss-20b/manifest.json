@@ -1,7 +1,7 @@
 {
-  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline",
+  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget",
   "status": "post-observation (added after the Task Talk; not pre-registered)",
-  "generated_utc": "2026-11-25T05:06:52+00:00",
+  "generated_utc": "2026-11-25T05:25:20+00:00",
   "command": "python -m harness.external",
   "model": "gpt-oss-20b",
   "protocol": {
@@ -30,7 +30,41 @@
     "leakage_unverified_policy": "excluded from primary (analysis choice, documented in the report)",
     "shuffled_rerun": "recorded, not gating",
     "llm_calls": 0,
-    "programs_rerun": 0
+    "programs_rerun": 0,
+    "selection": {
+      "requests": {
+        "cars": {
+          "request_id": "CAR-14",
+          "kind": "choose_order",
+          "step": 7
+        },
+        "nasa": {
+          "request_id": "NASA-14",
+          "kind": "choose_order",
+          "step": 7
+        },
+        "apache": {
+          "request_id": "APACHE-14",
+          "kind": "choose_order",
+          "step": 7
+        }
+      },
+      "answer": "ANSWER <ID> {\"order\": [row numbers, first evaluated first]}; 10..budget distinct rows (validated by harness.answers.check_request)",
+      "candidate_pool": "every row of the domain CSV (1-based file order)",
+      "budget": "harness.oracle.budget(n) = min(30, n // 5): cars 30, nasa 18, apache 30",
+      "score": "harness.oracle.d2h over all rows (min-max bounds over all rows, goal direction from the column suffix); lower is better; used only to grade rows the program already listed",
+      "best_d2h": "lowest d2h among the rows in the recorded order",
+      "regret": "best_d2h - lowest d2h in the candidate pool",
+      "normalized_regret": "regret / (highest - lowest d2h in the pool); undefined when that range is 0",
+      "expected_random_best": "exact expectation of the lowest d2h among k rows drawn uniformly without replacement, k = number of rows in the order (no simulated draws)",
+      "advantage_vs_random": "expected_random_best - best_d2h (positive = better than random)",
+      "p_random_at_least_as_good": "probability that k random rows include one with d2h <= best_d2h",
+      "common_k": "the same metrics on the first 10 rows of every order (the minimum length allowed), for comparison across domains and order lengths",
+      "beats_random": "advantage_vs_random > 0 (analysis choice)",
+      "primary_inclusion": "program ran; ANSWER accepted by harness.answers.check_request; honeypot rerun recorded as passed",
+      "honeypot_unverified_policy": "excluded from primary (analysis choice)",
+      "shuffled_rerun": "recorded, not gating"
+    }
   },
   "inputs": {
     "archive": {
@@ -72,8 +106,8 @@
     "code": {
       "external": {
         "path": "harness/external.py",
-        "sha256": "394c3908a2e6c994dbeedcd4b9dd4dd793d2fec6d72f470d520c333d15b7aaf6",
-        "bytes": 30337
+        "sha256": "f5cd3ea01d6f29a99e33a225b5849d5a640b9b1bbbb18970d329f02787c72b13",
+        "bytes": 55755
       },
       "answers": {
         "path": "harness/answers.py",
@@ -93,7 +127,7 @@
     }
   },
   "git": {
-    "commit": "c257bcdf2d6096892db8483d96406a5154b0e045",
+    "commit": "ebcd5da4f74f7622ae3f414da2cb8fc32933cad5",
     "branch": "analysis/external-metrics",
     "dirty": true
   },
@@ -110,7 +144,16 @@
       "sha256": "bfdf4537a3c13346996dbd2b9c6499ec6e5da58424e4827ca37ee7b8a7b222cd"
     },
     "prediction_report.md": {
-      "sha256": "894a1752c9193a8aaf4a88a6b52132fb00dc7e55179c3b7229726d5d12d25e67"
+      "sha256": "7baf4e4951f676edc140da27c042ac50b4571a549cde7c71e89581b893d7eada"
+    },
+    "selection_quality.csv": {
+      "sha256": "35479bc46e332515390b91ffe682fe249924012c89835ab9633f249db6a65dda"
+    },
+    "selection_summary.csv": {
+      "sha256": "3ecb40ca54175f50950b4ed8150d1ef79bf83a3eaded5591c8f59596f90fcfb0"
+    },
+    "selection_report.md": {
+      "sha256": "055cc3f97fd094561a059493f29a2b6b01a665b9a40199d3eb2a1414835051ce"
     }
   }
 }

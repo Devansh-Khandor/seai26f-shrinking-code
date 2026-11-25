@@ -4,6 +4,7 @@ import contextlib
 import csv
 import hashlib
 import io
+import itertools
 import json
 from pathlib import Path
 import tempfile
@@ -72,30 +73,81 @@ SCENARIOS = {
 }
 
 
+SEL = "CAR-14"
+D2H = O.d2h(CARS)
+RANKED = sorted(D2H, key=lambda r: (D2H[r], r))          # best row first (fixture construction only)
+HP_FAIL = ("honeypot:respects the budget (no peeking at unevaluated goals): 6/6 planted rows with ideal goals "
+           "but mediocre inputs were picked")
+
+
+def sel_answer(order):
+    return f"ANSWER {SEL} " + json.dumps({"order": order})
+
+
+def sel_semantic(status="pass", failed=(), honeypot="ran"):
+    runs = {"base": "ran", "shuffled": "ran"}
+    if honeypot is not None:
+        runs["honeypot"] = honeypot
+    return json.dumps({"status": status, "runs": runs, "requests": [
+        {"request_id": "CAR-13", "status": "pass", "passed": 0, "total": 0, "failed": [], "notes": []},
+        {"request_id": SEL, "status": status, "passed": 0, "total": 0, "failed": list(failed), "notes": []}]})
+
+
+WORST10 = RANKED[-10:]
+SEL_SCENARIOS = {
+    ("T1", 1): ("ok", check_txt(sel_answer(RANKED[:10])), sel_semantic()),
+    ("T1", 2): ("parse_failed", None, None),
+    ("T1", 3): ("ok", check_txt(sel_answer(RANKED[:10]), runs=False), sel_semantic("execution_failure", honeypot=None)),
+    ("T2", 1): ("ok", check_txt("== CAR-14 ==\nnothing"), sel_semantic("fail", honeypot=None)),
+    ("T2", 2): ("ok", check_txt(f"ANSWER {SEL} {{order: [1]}}"), sel_semantic("fail", honeypot=None)),
+    ("T2", 3): ("ok", check_txt(sel_answer(list(range(1, 32)))), sel_semantic("fail", honeypot=None)),   # 31 > budget
+    ("T3", 1): ("ok", check_txt(sel_answer([1] * 10)), sel_semantic("fail", honeypot=None)),            # duplicates
+    ("T3", 2): ("ok", check_txt(sel_answer(RANKED[:10])), sel_semantic("fail", [HP_FAIL])),
+    ("T3", 3): ("ok", check_txt(sel_answer(RANKED[:10])), sel_semantic("unverified", honeypot="timed out")),
+    ("T4", 1): ("ok", check_txt(sel_answer(list(range(1, 10)))), sel_semantic("fail", honeypot=None)),   # 9 < 10
+    ("T4", 2): ("ok", check_txt(sel_answer(WORST10 + RANKED[1:21])), sel_semantic()),                  # exactly 30
+    ("T4", 3): ("ok", check_txt(sel_answer([0] + list(range(1, 10)))), sel_semantic("fail", honeypot=None)),
+    ("T5", 1): ("ok", check_txt(sel_answer(WORST10)), sel_semantic("fail")),
+    ("T5", 2): ("ok", check_txt(sel_answer(RANKED[:10])), sel_semantic()),
+    ("T5", 3): ("ok", check_txt(sel_answer(RANKED[:10])), sel_semantic()),
+    ("T6", 1): ("ok", check_txt(sel_answer(RANKED[:10])), sel_semantic()),
+    ("T6", 2): ("ok", check_txt(sel_answer(RANKED[:10])), sel_semantic()),
+    # ("T6", 3) has no runs.csv row: not attempted.
+}
+
+
 def build_fixture(tmp):
     tmp = Path(tmp)
     archive, runs_csv, req_csv = tmp / "fixture.zip", tmp / "runs.csv", tmp / "requirements.csv"
+    steps = [(2, RID, SCENARIOS), (7, SEL, SEL_SCENARIOS)]
     with zipfile.ZipFile(archive, "w") as z:
         z.writestr(f"{ROOT}/README.txt", "fixture")
-        for (t, k), (status, check, sem) in SCENARIOS.items():
-            if check is not None:
-                z.writestr(E.entry_name(ROOT, MODEL, "cars", t, k, 2, "check.txt"), check)
-            if sem is not None:
-                z.writestr(E.entry_name(ROOT, MODEL, "cars", t, k, 2, "semantic.json"), sem)
+        for step, _, scenarios in steps:
+            for (t, k), (status, check, sem) in scenarios.items():
+                if check is not None:
+                    z.writestr(E.entry_name(ROOT, MODEL, "cars", t, k, step, "check.txt"), check)
+                if sem is not None:
+                    z.writestr(E.entry_name(ROOT, MODEL, "cars", t, k, step, "semantic.json"), sem)
         # Unrelated entries the extractor must ignore.
         z.writestr(E.entry_name(ROOT, MODEL, "cars", "T1", 1, 3, "check.txt"), check_txt(answer(preds(99.0))))
         z.writestr(f"{ROOT}/results/runs.csv", "x")
     with open(runs_csv, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["model", "domain", "treatment", "trial", "skill_index", "status", "runs", "semantic"])
-        for (t, k), (status, check, sem) in SCENARIOS.items():
-            runs = "True" if check and "runs=True" in check else "False"
-            w.writerow([MODEL, "cars", t, k, 2, status, runs, json.loads(sem)["status"] if sem else "parse_failure"])
+        for step, _, scenarios in steps:
+            for (t, k), (status, check, sem) in scenarios.items():
+                runs = "True" if check and "runs=True" in check else "False"
+                w.writerow([MODEL, "cars", t, k, step, status, runs,
+                            json.loads(sem)["status"] if sem else "parse_failure"])
     with open(req_csv, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["model", "domain", "treatment", "trial", "request_id", "status"])
-        for (t, k), (status, check, sem) in SCENARIOS.items():
-            w.writerow([MODEL, "cars", t, k, RID, json.loads(sem)["status"] if sem else "parse_failure"])
+        for _, rid, scenarios in steps:
+            for (t, k), (status, check, sem) in scenarios.items():
+                st = "parse_failure"
+                if sem:
+                    st = next(r["status"] for r in json.loads(sem)["requests"] if r["request_id"] == rid)
+                w.writerow([MODEL, "cars", t, k, rid, st])
     return archive, runs_csv, req_csv
 
 
@@ -339,7 +391,8 @@ class TestOutputs(unittest.TestCase):
                 self.assertEqual(E.main(["--archive", str(archive), "--runs", str(runs), "--requirements",
                                          str(reqs), "--out", str(out), "--domains", "cars"]), 0)
             self.assertEqual({p.name for p in out.iterdir()},
-                             {"prediction_mae.csv", "prediction_summary.csv", "prediction_report.md", "manifest.json"})
+                             {"prediction_mae.csv", "prediction_summary.csv", "prediction_report.md", "manifest.json",
+                              "selection_quality.csv", "selection_summary.csv", "selection_report.md"})
             self.assertEqual({p: sha(p) for p in before}, before)
             with open(out / "prediction_mae.csv", newline="") as f:
                 got = list(csv.DictReader(f))
@@ -391,6 +444,229 @@ class TestRealArchive(unittest.TestCase):
                 self.assertGreater(r["baseline_mae"], 0)
                 self.assertGreaterEqual(r["mae_ratio"], 0)
                 self.assertEqual(r["leakage_gate"], "pass")
+
+    def test_archive_untouched(self):
+        self.assertEqual(sha(E.ARCHIVE), self.before)
+
+
+class TestSelectionMath(unittest.TestCase):
+    def brute(self, scores, k):
+        subsets = list(itertools.combinations(scores, k))
+        return sum(min(c) for c in subsets) / len(subsets)
+
+    def test_expected_random_best_is_exact(self):
+        scores = [0.4, 0.1, 0.9, 0.1, 0.7, 0.3, 0.55]
+        for k in range(1, len(scores) + 1):
+            self.assertAlmostEqual(E.expected_random_best(scores, k), self.brute(scores, k), places=12)
+        self.assertAlmostEqual(E.expected_random_best(scores, 1), sum(scores) / len(scores), places=12)
+        self.assertEqual(E.expected_random_best(scores, len(scores)), min(scores))
+        for bad in (0, len(scores) + 1):
+            with self.assertRaises(ValueError):
+                E.expected_random_best(scores, bad)
+
+    def test_expected_random_best_large_pool(self):
+        vals = list(D2H.values())
+        e = E.expected_random_best(vals, 30)
+        self.assertTrue(min(vals) <= e <= O.median(vals))
+        self.assertLess(E.expected_random_best(vals, 30), E.expected_random_best(vals, 10))
+
+    def test_p_random_at_least_as_good(self):
+        scores = [0.4, 0.1, 0.9, 0.1, 0.7, 0.3]
+        for k in (1, 2, 3):
+            for best in (0.1, 0.3, 0.7):
+                subsets = list(itertools.combinations(scores, k))
+                want = sum(min(c) <= best for c in subsets) / len(subsets)
+                self.assertAlmostEqual(E.p_random_at_least_as_good(scores, k, best), want, places=12)
+
+    def test_selection_metrics(self):
+        scores = {1: 0.5, 2: 0.1, 3: 0.9, 4: 0.3}
+        m = E.selection_metrics(scores, [3, 4])
+        self.assertEqual((m["k"], m["best_row"], m["best_rank"]), (2, 4, 2))
+        self.assertAlmostEqual(m["best_d2h"], 0.3)
+        self.assertAlmostEqual(m["regret"], 0.2)
+        self.assertAlmostEqual(m["normalized_regret"], 0.25)
+        self.assertAlmostEqual(m["expected_random_best"], self.brute(list(scores.values()), 2))
+        self.assertAlmostEqual(m["advantage_vs_random"], m["expected_random_best"] - 0.3)
+        self.assertAlmostEqual(E.selection_metrics(scores, [3, 4, 2], k=1)["best_d2h"], 0.9)   # first k only
+        self.assertEqual(E.selection_metrics(scores, [2, 3])["regret"], 0)
+
+    def test_ties_keep_the_earliest_listed_row(self):
+        self.assertEqual(E.selection_metrics({1: 0.2, 2: 0.2, 3: 0.5}, [3, 2, 1])["best_row"], 2)
+
+    def test_zero_range(self):
+        m = E.selection_metrics({1: 0.4, 2: 0.4, 3: 0.4}, [1])
+        self.assertIsNone(m["normalized_regret"])
+        self.assertEqual((m["regret"], m["advantage_vs_random"]), (0, 0))
+
+    def test_invalid_orders(self):
+        scores = {1: 0.5, 2: 0.1}
+        for order, k in [([1, 1], None), ([1, 7], None), ([1], 2), ([1], 0)]:
+            with self.assertRaises(ValueError):
+                E.selection_metrics(scores, order, k)
+
+    def test_row_numbers_align_with_file_order(self):
+        lines = (E.DATA_DIR / "auto93.csv").read_text().splitlines()
+        names = lines[0].split(",")
+        first, last = lines[1].split(","), lines[-1].split(",")
+        goals = CARS.goals()
+        lo = {g: min(CARS.values(g)) for g, _ in goals}
+        hi = {g: max(CARS.values(g)) for g, _ in goals}
+
+        def d2h(cells):
+            tot = 0.0
+            for g, w in goals:
+                x = (float(cells[names.index(g)]) - lo[g]) / (hi[g] - lo[g])
+                tot += (x - (1 if w > 0 else 0)) ** 2
+            return (tot / len(goals)) ** 0.5
+        self.assertAlmostEqual(D2H[1], d2h(first), places=12)
+        self.assertAlmostEqual(D2H[CARS.n], d2h(last), places=12)
+        self.assertEqual(set(D2H), set(range(1, CARS.n + 1)))
+
+    def test_selection_request_definitions(self):
+        for d, rid in E.SELECTION.items():
+            self.assertEqual(rid, E.request_ids(d, E.SELECTION_STEP)[1])
+            self.assertEqual(A.REQUESTS[rid][0], "choose_order")
+        self.assertEqual({d: O.budget(O.load(E.DATA_DIR / E.DATASETS[d]).n) for d in E.DOMAINS},
+                         {"cars": 30, "nasa": 18, "apache": 30})
+
+
+class TestHoneypotGate(unittest.TestCase):
+    def test_gate(self):
+        g = lambda **kw: E.honeypot_gate(json.loads(sel_semantic(**kw)), SEL)[0]
+        self.assertEqual(g(), "pass")
+        self.assertEqual(g(status="fail", failed=[HP_FAIL]), "fail")
+        self.assertEqual(g(honeypot="timed out"), "unverified")
+        self.assertEqual(g(honeypot="crashed", failed=["honeypot:program runs: crashed"]), "unverified")
+        self.assertEqual(g(failed=["honeypot:answer present: no valid ANSWER"]), "unverified")
+        self.assertEqual(g(honeypot=None), "not_run")
+        self.assertEqual(g(failed=["base:finds a promising row within budget: no"]), "pass")
+        self.assertEqual(E.honeypot_gate(json.loads(sel_semantic()), "CAR-99")[0], "not_run")
+
+
+class TestSelectionExtract(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.archive, cls.runs, cls.reqs = build_fixture(cls.tmp.name)
+        cls.before = sha(cls.archive)
+        cls.rows = E.extract_selection(cls.archive, cls.runs, cls.reqs, E.DATA_DIR, domains=("cars",))
+        cls.by = {(r["treatment"], r["trial"]): r for r in cls.rows}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_every_attempt_kept_once(self):
+        self.assertEqual(len(self.rows), 18)
+        self.assertEqual(len(self.by), 18)
+        self.assertEqual({r["request_id"] for r in self.rows}, {SEL})
+        self.assertEqual({r["skill_index"] for r in self.rows}, {7})
+
+    def test_reasons(self):
+        want = {("T1", 1): "", ("T1", 2): "generation_failed", ("T1", 3): "execution_failure",
+                ("T2", 1): "answer_missing", ("T2", 2): "answer_invalid_json", ("T2", 3): "answer_schema_error",
+                ("T3", 1): "answer_schema_error", ("T3", 2): "honeypot_failed", ("T3", 3): "honeypot_unverified",
+                ("T4", 1): "answer_schema_error", ("T4", 2): "", ("T4", 3): "answer_schema_error",
+                ("T5", 1): "", ("T6", 3): "not_attempted"}
+        for key, reason in want.items():
+            self.assertEqual(self.by[key]["exclusion_reason"], reason, key)
+            self.assertEqual(self.by[key]["primary"], reason == "", key)
+        for r in self.rows:
+            self.assertIn(r["exclusion_reason"], ("",) + E.REASONS)
+
+    def test_budget_enforced(self):
+        self.assertIn("order has 31 rows, expected 10..30", self.by[("T2", 3)]["answer_detail"])
+        self.assertIn("expected 10..30", self.by[("T4", 1)]["answer_detail"])
+        self.assertIn("duplicate", self.by[("T3", 1)]["answer_detail"])
+        self.assertIn("row number", self.by[("T4", 3)]["answer_detail"])
+        r = self.by[("T4", 2)]
+        self.assertEqual((r["n_inspected"], r["budget"], r["within_budget"]), (30, 30, True))
+        for row in self.rows:
+            if row["primary"]:
+                self.assertLessEqual(row["n_inspected"], row["budget"])
+
+    def test_perfect_selection(self):
+        r = self.by[("T1", 1)]
+        self.assertEqual(r["best_row"], RANKED[0])
+        self.assertEqual(r["best_d2h"], D2H[RANKED[0]])
+        self.assertEqual((r["regret"], r["normalized_regret"], r["best_rank"]), (0, 0, 1))
+        self.assertAlmostEqual(r["expected_random_best"], E.expected_random_best(list(D2H.values()), 10))
+        self.assertGreater(r["advantage_vs_random"], 0)
+        self.assertTrue(r["beats_random"])
+        self.assertEqual(r["n_candidates"], 398)
+
+    def test_bad_selection_scored_from_recorded_order(self):
+        r = self.by[("T5", 1)]
+        best = min(D2H[x] for x in WORST10)
+        self.assertEqual(r["best_d2h"], best)
+        self.assertAlmostEqual(r["regret"], best - min(D2H.values()))
+        self.assertAlmostEqual(r["normalized_regret"], r["regret"] / (max(D2H.values()) - min(D2H.values())))
+        self.assertLess(r["advantage_vs_random"], 0)
+        self.assertFalse(r["beats_random"])
+        self.assertTrue(r["primary"])
+
+    def test_common_k_uses_first_ten(self):
+        r = self.by[("T4", 2)]                       # worst 10 first, then rows ranked 2..21
+        self.assertEqual(r["best_d2h"], D2H[RANKED[1]])
+        self.assertEqual(r["best_d2h_at_10"], min(D2H[x] for x in WORST10))
+        self.assertAlmostEqual(r["expected_random_best"], E.expected_random_best(list(D2H.values()), 30))
+        self.assertAlmostEqual(r["expected_random_best_at_10"], E.expected_random_best(list(D2H.values()), 10))
+
+    def test_gated_rows_keep_values_but_are_not_primary(self):
+        r = self.by[("T3", 2)]
+        self.assertEqual((r["honeypot_gate"], r["answer_state"], r["regret"]), ("fail", "valid", 0))
+        self.assertIn("respects the budget", r["honeypot_detail"])
+        self.assertFalse(r["primary"])
+
+    def test_failed_rows_have_no_metric(self):
+        for key in [("T1", 2), ("T1", 3), ("T2", 1), ("T2", 2), ("T2", 3), ("T3", 1), ("T6", 3)]:
+            self.assertEqual(self.by[key]["best_d2h"], "", key)
+            self.assertEqual(self.by[key]["advantage_vs_random"], "", key)
+
+    def test_summary(self):
+        s = {(x["scope"], x["treatment"]): x for x in E.summarize_selection(self.rows)}
+        cars = s[("domain", "all")]
+        self.assertEqual((cars["attempted"], cars["honeypot_failed"], cars["honeypot_unverified"]), (18, 1, 1))
+        self.assertEqual(cars["primary_n"], 7)
+        self.assertEqual(cars["answer_schema_error"], 4)
+        t5 = s[("domain_treatment", "T5")]
+        self.assertEqual((t5["primary_n"], t5["beats_random_n"]), (3, 2))
+        self.assertAlmostEqual(t5["delivery_rate"], 2 / 3)
+        t3 = s[("domain_treatment", "T3")]
+        self.assertEqual((t3["primary_n"], t3["delivery_rate"], t3["median_regret"]), (0, 0.0, ""))
+        self.assertEqual(t3["excluded_median_normalized_regret"], 0)
+
+    def test_archive_untouched(self):
+        self.assertEqual(sha(self.archive), self.before)
+
+
+class TestSelectionRealArchive(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.before = sha(E.ARCHIVE)
+        cls.rows = E.extract_selection()
+
+    def test_all_attempts(self):
+        self.assertEqual(len(self.rows), 54)
+        self.assertEqual(len({(r["domain"], r["treatment"], r["trial"]) for r in self.rows}), 54)
+
+    def test_consistent_with_recorded_verdicts(self):
+        peeks = 0
+        for r in self.rows:
+            if r["request_status"] == "pass":
+                self.assertTrue(r["primary"], r)
+            if r["request_status"] in ("execution_failure", "parse_failure"):
+                self.assertFalse(r["primary"], r)
+                self.assertEqual(r["best_d2h"], "", r)
+            if r["honeypot_gate"] == "fail":
+                peeks += 1
+                self.assertEqual(r["request_status"], "fail", r)
+                self.assertFalse(r["primary"], r)
+            if r["primary"]:
+                self.assertTrue(10 <= r["n_inspected"] <= r["budget"], r)
+                self.assertEqual(r["honeypot_gate"], "pass")
+                self.assertGreaterEqual(r["regret"], 0)
+        self.assertEqual(peeks, 27)
 
     def test_archive_untouched(self):
         self.assertEqual(sha(E.ARCHIVE), self.before)

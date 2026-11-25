@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 import hashlib
 import io
 import json
+from math import comb
 from pathlib import Path
 import platform
 import re
@@ -80,6 +81,8 @@ REASONS = (
     "leakage_failed",           # mask rerun: changing held-out targets moved the predictions
     "leakage_unverified",       # mask rerun crashed, timed out, gave no valid answer, or never ran
     "baseline_zero",            # baseline MAE is 0, so the ratio is undefined
+    "honeypot_failed",          # honeypot rerun: planted ideal rows were picked within the budget (peeking)
+    "honeypot_unverified",      # honeypot rerun crashed, timed out, gave no valid answer, or never ran
 )
 
 CSV_FIELDS = [
@@ -263,25 +266,28 @@ def extract(archive=ARCHIVE, runs_csv=RUNS_CSV, requirements_csv=REQUIREMENTS_CS
     return rows
 
 
-def _row(z, names, root, model, domain, t, k, rid, target, direction, data, base_mean, base_mae, n_held, runs, reqs):
-    row = {f: "" for f in CSV_FIELDS}
-    row.update(model=model, domain=domain, treatment=t, trial=k, skill_index=GUESS_STEP, request_id=rid,
-               target=target, target_direction=direction, baseline_mean=base_mean, baseline_mae=base_mae,
-               n_heldout=n_held, primary=False, leakage_gate="not_run", shuffled_gate="not_run")
-    run = runs.get((model, domain, t, str(k), str(GUESS_STEP)))
+def _attempt(z, names, root, model, domain, t, k, step, rid, data, runs, reqs, fields, defaults):
+    """Common part of every metric: locate the attempt, read its archived output, validate the answer.
+
+    Returns (row, ctx, answer, semantic evidence). ctx is None when the attempt has no schema-valid
+    answer; the row then already carries its exclusion reason."""
+    row = {f: "" for f in fields}
+    row.update(model=model, domain=domain, treatment=t, trial=k, skill_index=step, request_id=rid, primary=False)
+    row.update(defaults)
+    run = runs.get((model, domain, t, str(k), str(step)))
     req = reqs.get((model, domain, t, str(k), rid))
     row["request_status"] = req["status"] if req else ""
     if run is None:
         row["exclusion_reason"] = "not_attempted"
-        return row
+        return row, None, None, {}
     row.update(step_status=run["status"], step_runs=run["runs"], step_semantic=run["semantic"])
-    check = entry_name(root, model, domain, t, k, GUESS_STEP, "check.txt")
-    sem_name = entry_name(root, model, domain, t, k, GUESS_STEP, "semantic.json")
+    check = entry_name(root, model, domain, t, k, step, "check.txt")
+    sem_name = entry_name(root, model, domain, t, k, step, "semantic.json")
     if run["status"] != "ok" or check not in names:
         row["answer_state"] = "no_output"
         row["exclusion_reason"] = "generation_failed"
         row["answer_detail"] = f"step status {run['status']}"
-        return row
+        return row, None, None, {}
     raw = z.read(check)
     info = z.getinfo(check)
     row.update(check_entry=check, check_crc32=f"{info.CRC:08x}", check_sha256=_sha(raw))
@@ -295,20 +301,30 @@ def _row(z, names, root, model, domain, t, k, rid, target, direction, data, base
     if not flags.get("runs", False):
         row["answer_state"] = "not_checked"
         row["exclusion_reason"] = "execution_timeout" if flags.get("timed_out") else "execution_failure"
-        return row
+        return row, None, None, sem
     ans = A.parse_answers(stdout).get(rid)
     if ans is None:
         row.update(answer_state="missing", exclusion_reason="answer_missing")
-        return row
+        return row, None, None, sem
     if isinstance(ans, str):
         row.update(answer_state="invalid_json", answer_detail=ans[:200], exclusion_reason="answer_invalid_json")
-        return row
+        return row, None, None, sem
     ctx = A.check_request(rid, data, ans, "base")
     bad = [d for name, ok, d in ctx.items if name.endswith("answer format") and not ok]
     if bad:
         row.update(answer_state="schema_error", answer_detail=bad[0][:200], exclusion_reason="answer_schema_error")
-        return row
+        return row, None, None, sem
     row["answer_state"] = "valid"
+    return row, ctx, ans, sem
+
+
+def _row(z, names, root, model, domain, t, k, rid, target, direction, data, base_mean, base_mae, n_held, runs, reqs):
+    row, ctx, ans, sem = _attempt(
+        z, names, root, model, domain, t, k, GUESS_STEP, rid, data, runs, reqs, CSV_FIELDS,
+        dict(target=target, target_direction=direction, baseline_mean=base_mean, baseline_mae=base_mae,
+             n_heldout=n_held, leakage_gate="not_run", shuffled_gate="not_run"))
+    if ctx is None:
+        return row
     preds = A._heldout_preds(ctx)            # the checker's own reading of the predictions
     mae = model_mae(data, target, preds)
     ratio, why = mae_ratio(mae, base_mae)
@@ -330,6 +346,249 @@ def _row(z, names, root, model, domain, t, k, rid, target, direction, data, base
     else:
         row["primary"] = True
     return row
+
+
+# ---- phase 2: selection quality (Choose, choose_order) ------------------------------
+
+def honeypot_gate(sem, request_id):
+    """('pass' | 'fail' | 'unverified' | 'not_run', detail) from the archived honeypot rerun.
+
+    The honeypot copy plants six rows with ideal goals but middling inputs. A program that
+    picks them within its budget is reading goal values it has not paid to inspect."""
+    req = next((r for r in sem.get("requests", []) if r.get("request_id") == request_id), None)
+    if req is None:
+        return "not_run", "request missing from semantic evidence"
+    outcome = sem.get("runs", {}).get("honeypot")
+    hp = [f for f in req.get("failed", []) if f.startswith("honeypot:")]
+    peek = [f for f in hp if f.startswith("honeypot:respects the budget")]
+    if peek:
+        return "fail", peek[0][:200]
+    if outcome is None:
+        return "not_run", "no honeypot rerun recorded"
+    if outcome != "ran":
+        return "unverified", f"honeypot rerun {outcome}"
+    if hp:
+        return "unverified", hp[0][:200]
+    return "pass", ""
+
+
+def expected_random_best(scores, k):
+    """Exact expected minimum score of K distinct rows drawn uniformly at random from SCORES.
+
+    With scores sorted ascending s[0] <= ... <= s[n-1], the minimum of a random K-subset is s[i]
+    with probability C(n-1-i, k-1) / C(n, k). No random draws are simulated."""
+    s = sorted(scores)
+    n = len(s)
+    if not 1 <= k <= n:
+        raise ValueError(f"k={k} outside 1..{n}")
+    total = comb(n, k)
+    return sum(s[i] * (comb(n - 1 - i, k - 1) / total) for i in range(n - k + 1))
+
+
+def p_random_at_least_as_good(scores, k, best):
+    """Probability that K uniformly random rows include one scoring <= BEST."""
+    worse = sum(v > best for v in scores)
+    return 1 - comb(worse, k) / comb(len(scores), k)
+
+
+def selection_metrics(scores, order, k=None):
+    """Score a recorded inspection ORDER with oracle d2h SCORES {row: d2h} (lower is better).
+
+    Only the first K rows of the order count (default: all of it). Returns a dict of metrics.
+    The scores are used only to grade rows the program already chose; they never build an order."""
+    k = len(order) if k is None else k
+    if not 1 <= k <= len(order):
+        raise ValueError(f"cannot score the first {k} rows of an order of {len(order)}")
+    picked = order[:k]
+    if len(set(picked)) != len(picked) or any(r not in scores for r in picked):
+        raise ValueError("order must list distinct candidate rows")
+    vals = list(scores.values())
+    best_row = min(picked, key=lambda r: (scores[r], picked.index(r)))
+    best, lo, hi = scores[best_row], min(vals), max(vals)
+    rng = hi - lo
+    exp_rand = expected_random_best(vals, k)
+    return {
+        "k": k, "best_row": best_row, "best_d2h": best, "pool_best_d2h": lo, "pool_worst_d2h": hi,
+        "d2h_range": rng, "regret": best - lo,
+        "normalized_regret": (best - lo) / rng if rng > 0 else None,
+        "best_rank": 1 + sum(v < best for v in vals),
+        "expected_random_best": exp_rand, "advantage_vs_random": exp_rand - best,
+        "p_random_at_least_as_good": p_random_at_least_as_good(vals, k, best),
+    }
+
+
+SELECTION_STEP = 7
+SELECTION = {"cars": "CAR-14", "nasa": "NASA-14", "apache": "APACHE-14"}
+COMMON_K = 10      # the smallest order length the frozen answer format allows, shared by all domains
+
+SELECTION_FIELDS = [
+    "model", "domain", "treatment", "trial", "skill_index", "request_id",
+    "step_status", "step_runs", "step_semantic", "request_status",
+    "check_runs", "check_timed_out", "answer_state", "answer_detail",
+    "honeypot_gate", "honeypot_detail", "shuffled_gate",
+    "n_candidates", "budget", "n_inspected", "within_budget",
+    "best_row", "best_d2h", "pool_best_d2h", "pool_worst_d2h", "d2h_range",
+    "regret", "normalized_regret", "best_rank", "expected_random_best", "advantage_vs_random",
+    "p_random_at_least_as_good",
+    "best_d2h_at_10", "regret_at_10", "expected_random_best_at_10", "advantage_at_10",
+    "beats_random", "primary", "exclusion_reason", "notes",
+    "check_entry", "check_crc32", "check_sha256", "semantic_entry", "semantic_sha256",
+]
+
+SELECTION_SUMMARY_FIELDS = [
+    "scope", "domain", "treatment", "request_id", "budget",
+    "attempted", "generation_failed", "execution_failed", "answer_missing", "answer_invalid_json",
+    "answer_schema_error", "schema_valid", "honeypot_failed", "honeypot_unverified",
+    "primary_n", "primary_rate", "beats_random_n", "conditional_beat_rate", "delivery_rate",
+    "median_best_d2h", "median_regret", "median_normalized_regret", "median_advantage_vs_random",
+    "median_advantage_at_10", "median_p_random_at_least_as_good", "median_n_inspected", "pool_best_d2h",
+    "excluded_median_normalized_regret",
+]
+
+SELECTION_PROTOCOL = {
+    "requests": {d: {"request_id": SELECTION[d], "kind": "choose_order", "step": SELECTION_STEP} for d in DOMAINS},
+    "answer": "ANSWER <ID> {\"order\": [row numbers, first evaluated first]}; 10..budget distinct rows "
+              "(validated by harness.answers.check_request)",
+    "candidate_pool": "every row of the domain CSV (1-based file order)",
+    "budget": "harness.oracle.budget(n) = min(30, n // 5): cars 30, nasa 18, apache 30",
+    "score": "harness.oracle.d2h over all rows (min-max bounds over all rows, goal direction from the column "
+             "suffix); lower is better; used only to grade rows the program already listed",
+    "best_d2h": "lowest d2h among the rows in the recorded order",
+    "regret": "best_d2h - lowest d2h in the candidate pool",
+    "normalized_regret": "regret / (highest - lowest d2h in the pool); undefined when that range is 0",
+    "expected_random_best": "exact expectation of the lowest d2h among k rows drawn uniformly without replacement, "
+                            "k = number of rows in the order (no simulated draws)",
+    "advantage_vs_random": "expected_random_best - best_d2h (positive = better than random)",
+    "p_random_at_least_as_good": "probability that k random rows include one with d2h <= best_d2h",
+    "common_k": f"the same metrics on the first {COMMON_K} rows of every order (the minimum length allowed), "
+                "for comparison across domains and order lengths",
+    "beats_random": "advantage_vs_random > 0 (analysis choice)",
+    "primary_inclusion": "program ran; ANSWER accepted by harness.answers.check_request; honeypot rerun recorded "
+                         "as passed",
+    "honeypot_unverified_policy": "excluded from primary (analysis choice)",
+    "shuffled_rerun": "recorded, not gating",
+}
+
+
+def extract_selection(archive=ARCHIVE, runs_csv=RUNS_CSV, requirements_csv=REQUIREMENTS_CSV, data_dir=DATA_DIR,
+                      model=MODEL, domains=DOMAINS):
+    """One row per attempted (domain, treatment, trial) for the Choose inspection-order request."""
+    runs = _index(runs_csv, ("model", "domain", "treatment", "trial", "skill_index"))
+    reqs = _index(requirements_csv, ("model", "domain", "treatment", "trial", "request_id"))
+    rows = []
+    with zipfile.ZipFile(archive) as z:
+        names = set(z.namelist())
+        root = archive_root(names, model)
+        for domain in domains:
+            rid = SELECTION[domain]
+            if rid not in request_ids(domain, SELECTION_STEP) or A.REQUESTS[rid][0] != "choose_order":
+                raise ValueError(f"{rid} is not the frozen choose_order request")
+            data = O.load(Path(data_dir) / DATASETS[domain])
+            scores = O.d2h(data)
+            if len(scores) != data.n:
+                raise ValueError(f"some {domain} rows have no d2h (missing goal values)")
+            for t in TREATMENTS:
+                for k in TRIALS:
+                    rows.append(_selection_row(z, names, root, model, domain, t, k, rid, data, scores, runs, reqs))
+    keys = [(r["domain"], r["treatment"], r["trial"]) for r in rows]
+    if len(keys) != len(set(keys)):
+        raise ValueError("duplicate trial records")
+    return rows
+
+
+def _selection_row(z, names, root, model, domain, t, k, rid, data, scores, runs, reqs):
+    budget = O.budget(data.n)
+    row, ctx, ans, sem = _attempt(
+        z, names, root, model, domain, t, k, SELECTION_STEP, rid, data, runs, reqs, SELECTION_FIELDS,
+        dict(n_candidates=data.n, budget=budget, honeypot_gate="not_run", shuffled_gate="not_run",
+             pool_best_d2h=min(scores.values()), pool_worst_d2h=max(scores.values()),
+             d2h_range=max(scores.values()) - min(scores.values())))
+    if ctx is None:
+        return row
+    order = A.rows(data, A.need(ans, "order", "list"), "order")       # the checker's own reading
+    row.update(n_inspected=len(order), within_budget=len(order) <= budget)
+    if len(order) > budget:                                           # the frozen schema already forbids this
+        row.update(exclusion_reason="answer_schema_error", answer_state="schema_error",
+                   answer_detail=f"order has {len(order)} rows, budget is {budget}")
+        return row
+    m = selection_metrics(scores, order)
+    m10 = selection_metrics(scores, order, COMMON_K)
+    notes = []
+    if m["normalized_regret"] is None:
+        notes.append("d2h range is zero: normalized regret undefined")
+    row.update(best_row=m["best_row"], best_d2h=m["best_d2h"], regret=m["regret"],
+               normalized_regret="" if m["normalized_regret"] is None else m["normalized_regret"],
+               best_rank=m["best_rank"], expected_random_best=m["expected_random_best"],
+               advantage_vs_random=m["advantage_vs_random"],
+               p_random_at_least_as_good=m["p_random_at_least_as_good"],
+               best_d2h_at_10=m10["best_d2h"], regret_at_10=m10["regret"],
+               expected_random_best_at_10=m10["expected_random_best"], advantage_at_10=m10["advantage_vs_random"],
+               beats_random=m["advantage_vs_random"] > 0, notes="; ".join(notes))
+    gate, detail = honeypot_gate(sem, rid)
+    row.update(honeypot_gate=gate, honeypot_detail=detail, shuffled_gate=shuffled_gate(sem, rid))
+    if gate == "fail":
+        row["exclusion_reason"] = "honeypot_failed"
+    elif gate != "pass":
+        row["exclusion_reason"] = "honeypot_unverified"
+    else:
+        row["primary"] = True
+    return row
+
+
+def _med(xs):
+    xs = [x for x in xs if x != "" and x is not None]
+    return O.median(xs) if xs else ""
+
+
+def _selection_cell(scope, domain, treatment, rid, sel):
+    prim = [r for r in sel if r["primary"]]
+    beats = sum(bool(r["beats_random"]) for r in prim)
+    reasons = [r["exclusion_reason"] for r in sel]
+    budgets, bests = {r["budget"] for r in sel}, {r["pool_best_d2h"] for r in sel}
+    gated = [r for r in sel if r["exclusion_reason"] in ("honeypot_failed", "honeypot_unverified")]
+    return {
+        "scope": scope, "domain": domain, "treatment": treatment, "request_id": rid,
+        "budget": budgets.pop() if len(budgets) == 1 else "",
+        "attempted": len(sel),
+        "generation_failed": reasons.count("generation_failed") + reasons.count("not_attempted"),
+        "execution_failed": reasons.count("execution_failure") + reasons.count("execution_timeout"),
+        "answer_missing": reasons.count("answer_missing"),
+        "answer_invalid_json": reasons.count("answer_invalid_json"),
+        "answer_schema_error": reasons.count("answer_schema_error"),
+        "schema_valid": sum(r["answer_state"] == "valid" for r in sel),
+        "honeypot_failed": reasons.count("honeypot_failed"),
+        "honeypot_unverified": reasons.count("honeypot_unverified"),
+        "primary_n": len(prim), "primary_rate": _rate(len(prim), len(sel)),
+        "beats_random_n": beats, "conditional_beat_rate": _rate(beats, len(prim)),
+        "delivery_rate": _rate(beats, len(sel)),
+        "median_best_d2h": _med([r["best_d2h"] for r in prim]),
+        "median_regret": _med([r["regret"] for r in prim]),
+        "median_normalized_regret": _med([r["normalized_regret"] for r in prim]),
+        "median_advantage_vs_random": _med([r["advantage_vs_random"] for r in prim]),
+        "median_advantage_at_10": _med([r["advantage_at_10"] for r in prim]),
+        "median_p_random_at_least_as_good": _med([r["p_random_at_least_as_good"] for r in prim]),
+        "median_n_inspected": _med([r["n_inspected"] for r in prim]),
+        "pool_best_d2h": bests.pop() if len(bests) == 1 else "",
+        "excluded_median_normalized_regret": _med([r["normalized_regret"] for r in gated]),
+    }
+
+
+def summarize_selection(rows):
+    out = []
+    for d in DOMAINS:
+        for t in TREATMENTS:
+            sel = [r for r in rows if r["domain"] == d and r["treatment"] == t]
+            if sel:
+                out.append(_selection_cell("domain_treatment", d, t, SELECTION[d], sel))
+    for d in DOMAINS:
+        sel = [r for r in rows if r["domain"] == d]
+        if sel:
+            out.append(_selection_cell("domain", d, "all", SELECTION[d], sel))
+    for t in TREATMENTS:
+        sel = [r for r in rows if r["treatment"] == t]
+        if sel:
+            out.append(_selection_cell("treatment_all_domains", "all", t, "*-14", sel))
+    return out
 
 
 # ---- summaries ---------------------------------------------------------------------
@@ -558,7 +817,7 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
             copies[name] = (inside in z.namelist()
                             and _sha(z.read(inside)) == _sha(Path(path).read_bytes()))
     return {
-        "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline",
+        "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget",
         "status": "post-observation (added after the Task Talk; not pre-registered)",
         "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "command": "python -m harness.external" + (" " + " ".join(argv) if argv else ""),
@@ -575,6 +834,7 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
             "shuffled_rerun": "recorded, not gating",
             "llm_calls": 0,
             "programs_rerun": 0,
+            "selection": SELECTION_PROTOCOL,
         },
         "inputs": {
             "archive": _file_info(archive),
@@ -591,7 +851,152 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
     }
 
 
-def write_outputs(out_dir, rows, summary, manifest):
+def selection_report(rows, summary, manifest):
+    cells = [s for s in summary if s["scope"] == "domain_treatment"]
+    valid = [r for r in rows if r["answer_state"] == "valid"]
+    peek = [r for r in valid if r["honeypot_gate"] == "fail"]
+    lines = [
+        "# External metric, phase 2: selection quality under a fixed inspection budget",
+        "",
+        "**Status: post-observation analysis.** This metric was added after the Task Talk, after the v2 "
+        "T1–T6 results had been seen. It is not part of the pre-registered plan in `docs/hypotheses.md` "
+        "and does not change its win conditions.",
+        "",
+        "## What is measured",
+        "",
+        "- **Requests:** CAR-14, NASA-14, APACHE-14 (Choose, skill 7): \"recommend which rows should be evaluated "
+        "first\" under a limited inspection budget. Every v2 trial of T1–T6, model `gpt-oss-20b`.",
+        "- **Recorded answer:** `{\"order\": [row numbers]}`, the rows the program would inspect, first one first. "
+        "The frozen checker requires 10 to `budget` distinct rows, numbered 1..n in file order.",
+        "- **Budget and candidate pool:** the frozen `harness.oracle.budget(n)` = min(30, n // 5): Cars 30 of 398 "
+        "rows, NASA 18 of 93, Apache 30 of 192. Every row of the CSV is a candidate.",
+        "- **Score:** the frozen `harness.oracle.d2h` (distance to heaven over all goals, goal direction from the "
+        "column suffix; lower is better). It only grades rows the program already listed; it never builds or "
+        "changes an order.",
+        "- **Best selected d2h:** the lowest d2h among the rows in the order.",
+        "- **Regret:** best selected d2h − best d2h in the whole pool. **Normalized regret:** regret ÷ (worst − "
+        "best d2h in the pool); 0 = found the best row, 1 = found only the worst.",
+        "- **Advantage over random:** the exact expected best d2h of the same number of rows drawn uniformly at "
+        "random, minus the best selected d2h. Positive = better than random. It is computed in closed form, so "
+        "no random draws are simulated and none are counted as trials.",
+        "- **P(random ≥ as good):** the probability that the same number of random rows would include one at "
+        "least as good as the program's best.",
+        f"- **At {COMMON_K} rows:** the same metrics for the first {COMMON_K} rows of every order. Programs "
+        "chose different order lengths (10 to the budget), and budgets differ by domain; this column compares "
+        "everyone at the same inspection count.",
+        "",
+        "## Inclusion rules",
+        "",
+        "Every attempted trial is a row in `selection_quality.csv`. A row enters the primary metric only if the "
+        "program ran, its `ANSWER` passed the frozen checker's format, and the archived **honeypot** rerun "
+        "passed. The honeypot copy plants six rows with ideal goals but middling inputs; a program that puts "
+        "them early in its order is reading goal values it has not paid to inspect (budget peeking).",
+        "",
+        "- `honeypot_failed`: the frozen check \"respects the budget\" failed. Excluded.",
+        "- `honeypot_unverified`: the honeypot rerun crashed, timed out or gave no valid answer. Excluded "
+        "(analysis choice: peeking could not be ruled out).",
+        "- The shuffled-rows rerun is recorded (`shuffled_gate`) but does not gate this metric.",
+        "",
+        "**Delivery rate** = primary trials whose selection beats random (advantage > 0) ÷ all 3 attempted "
+        "trials. \"Beats random\" (advantage > 0) is a threshold chosen for this analysis.",
+        "",
+        "## Results by domain and treatment",
+        "",
+        "Each cell has 3 attempted trials. \"—\" means no primary value. Medians are over primary trials only.",
+        "",
+        "| domain | treatment | budget | attempted | exec. failed | no / bad answer | schema valid | "
+        "honeypot failed | honeypot unverified | primary n | median best d2h | median regret | median "
+        "normalized regret | median advantage vs random | median advantage at 10 | delivery rate |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for s in cells:
+        bad = s["answer_missing"] + s["answer_invalid_json"] + s["answer_schema_error"]
+        failed = s["execution_failed"] + s["generation_failed"]
+        lines.append(
+            f"| {s['domain']} | {s['treatment']} | {s['budget']} | {s['attempted']} | {failed} | {bad} | "
+            f"{s['schema_valid']} | {s['honeypot_failed']} | {s['honeypot_unverified']} | {s['primary_n']} | "
+            f"{_num(s['median_best_d2h'])} | {_num(s['median_regret'])} | {_num(s['median_normalized_regret'])} | "
+            f"{_num(s['median_advantage_vs_random'], '+.3f')} | {_num(s['median_advantage_at_10'], '+.3f')} | "
+            f"{_pct(s['delivery_rate'])} |")
+    lines += ["", "\"exec. failed\" includes steps that produced no program (`parse_failed`).", "",
+              "## By domain", "",
+              "| domain | request | budget | pool best d2h | attempted | schema valid | honeypot failed | primary n | "
+              "median normalized regret | median advantage vs random | delivery rate |",
+              "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    for s in [s for s in summary if s["scope"] == "domain"]:
+        lines.append(f"| {s['domain']} | {s['request_id']} | {s['budget']} | {_num(s['pool_best_d2h'])} | "
+                     f"{s['attempted']} | {s['schema_valid']} | {s['honeypot_failed']} | {s['primary_n']} | "
+                     f"{_num(s['median_normalized_regret'])} | {_num(s['median_advantage_vs_random'], '+.3f')} | "
+                     f"{_pct(s['delivery_rate'])} |")
+    lines += ["", "## By treatment, all three domains", "",
+              "Normalized regret and the advantage are on the d2h scale of each domain; the domains differ in "
+              "size, goals and budget. Treat this table as descriptive.", "",
+              "| treatment | attempted | schema valid | honeypot failed | primary n | median normalized regret | "
+              "median advantage at 10 | delivery rate |",
+              "|---|---:|---:|---:|---:|---:|---:|---:|"]
+    for s in [s for s in summary if s["scope"] == "treatment_all_domains"]:
+        lines.append(f"| {s['treatment']} | {s['attempted']} | {s['schema_valid']} | {s['honeypot_failed']} | "
+                     f"{s['primary_n']} | {_num(s['median_normalized_regret'])} | "
+                     f"{_num(s['median_advantage_at_10'], '+.3f')} | {_pct(s['delivery_rate'])} |")
+    lines += [
+        "", "## Budget peeking", "",
+        f"{len(peek)} of the {len(valid)} schema-valid orders failed the honeypot check. Their selections are kept "
+        "in the CSV (`primary = false`) but excluded from every summary above. For context only, the table "
+        "compares their scores on the real data with the primary orders. A program that reads unpaid goal "
+        "values can look better than an honest one, so the excluded values do not measure selection skill.", "",
+        "| domain | schema valid | honeypot failed | median normalized regret, excluded | median normalized regret, "
+        "primary | median advantage vs random, excluded | median advantage vs random, primary |",
+        "|---|---:|---:|---:|---:|---:|---:|"]
+    for d in DOMAINS:
+        v = [r for r in valid if r["domain"] == d]
+        if not v:
+            continue
+        ex = [r for r in v if r["honeypot_gate"] == "fail"]
+        pr = [r for r in v if r["primary"]]
+        lines.append(f"| {d} | {len(v)} | {len(ex)} | {_num(_med([r['normalized_regret'] for r in ex]))} | "
+                     f"{_num(_med([r['normalized_regret'] for r in pr]))} | "
+                     f"{_num(_med([r['advantage_vs_random'] for r in ex]), '+.3f')} | "
+                     f"{_num(_med([r['advantage_vs_random'] for r in pr]), '+.3f')} |")
+    lines += [
+        "", "## Per-trial values", "",
+        "| domain | treatment | trial | exclusion reason | inspected | best row | best d2h | regret | normalized "
+        "regret | expected random best | advantage | P(random ≥ as good) | honeypot |",
+        "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---|"]
+    for r in rows:
+        lines.append(
+            f"| {r['domain']} | {r['treatment']} | {r['trial']} | {r['exclusion_reason'] or 'included'} | "
+            f"{r['n_inspected'] or '—'} | {r['best_row'] or '—'} | {_num(r['best_d2h'])} | {_num(r['regret'])} | "
+            f"{_num(r['normalized_regret'])} | {_num(r['expected_random_best'])} | "
+            f"{_num(r['advantage_vs_random'], '+.3f')} | {_num(r['p_random_at_least_as_good'], '.2f')} | "
+            f"{r['honeypot_gate']} |")
+    lines += [
+        "", "## Limitations", "",
+        "- **Three trials per cell, often fewer usable.** No statistical comparison between treatments is made; "
+        "with n ≤ 3, `same()` would have very little power.",
+        "- **Budgets differ by domain** (30, 18, 30 rows) and pools differ in size (398, 93, 192), so a regret of "
+        f"the same size is not equally hard in every domain. The at-{COMMON_K} columns and normalized regret "
+        "reduce, but do not remove, this difference.",
+        "- **The order is scored, not replayed.** The archive records only the final order. Whether each choice "
+        "used only goals of rows already placed is known only through the honeypot gate.",
+        "- **The honeypot gate is a test, not a proof.** It checks the first budget(n − 6) rows of the order on a "
+        "planted copy of the data. Passing it does not prove the program never peeked.",
+        "- **d2h is one overall score.** The frozen checker also accepts z-score sums and rank sums for "
+        "\"overall\"; on NASA, whose goals conflict, they can disagree. This metric uses d2h only.",
+        "- **The random baseline is analytical.** It is the exact expectation for uniform sampling without "
+        "replacement, not a simulation, and it says nothing about variance between LLM trials.",
+        "- **T7 is not included** in this phase.",
+        "", "## Provenance", "",
+        f"- Archive: `{manifest['inputs']['archive']['path']}` (sha256 `{manifest['inputs']['archive']['sha256']}`)",
+        f"- Code commit: `{manifest['git']['commit']}` on `{manifest['git']['branch']}`"
+        f"{' (uncommitted changes present)' if manifest['git']['dirty'] else ''}",
+        f"- Command: `{manifest['command']}`",
+        "- Full input and output hashes: `manifest.json`.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=None):
     out = guard_out(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     files = {
@@ -599,6 +1004,12 @@ def write_outputs(out_dir, rows, summary, manifest):
         "prediction_summary.csv": to_csv(summary, SUMMARY_FIELDS),
         "prediction_report.md": report(rows, summary, manifest),
     }
+    if sel_rows is not None:
+        files.update({
+            "selection_quality.csv": to_csv(sel_rows, SELECTION_FIELDS),
+            "selection_summary.csv": to_csv(sel_summary, SELECTION_SUMMARY_FIELDS),
+            "selection_report.md": selection_report(sel_rows, sel_summary, manifest),
+        })
     for name, text in files.items():
         (out / name).write_text(text, encoding="utf-8")
     manifest = dict(manifest, outputs={n: {"sha256": _sha(t.encode("utf-8"))} for n, t in files.items()})
@@ -622,10 +1033,13 @@ def main(argv=None):
     guard_out(a.out)
     rows = extract(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
     summary = summarize(rows)
+    sel = extract_selection(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
+    sel_summary = summarize_selection(sel)
     manifest = build_manifest(a.archive, a.runs, a.requirements, a.data_dir, argv)
-    out = write_outputs(a.out, rows, summary, manifest)
-    prim = sum(r["primary"] for r in rows)
-    print(f"{len(rows)} attempts, {prim} in the primary metric; wrote {out}")
+    out = write_outputs(a.out, rows, summary, manifest, sel, sel_summary)
+    print(f"prediction: {len(rows)} attempts, {sum(r['primary'] for r in rows)} in the primary metric")
+    print(f"selection:  {len(sel)} attempts, {sum(r['primary'] for r in sel)} in the primary metric")
+    print(f"wrote {out}")
     return 0
 
 
