@@ -141,6 +141,6 @@ Original T7 write-up (`human_t7/apache/RESULTS.md`), a **different protocol** (s
 
 ## Provenance
 
-- Code commit: `3e9e0f0969eaf2752af9ad70df2b118dcdb165ec` on `analysis/external-metrics` (uncommitted changes present)
+- Code commit: `77dd4321306489cf77ea5640d96d5571453abb85` on `analysis/external-metrics` (uncommitted changes present)
 - Command: `python -m harness.external`
 - Adapter, implementation, dataset, stdout and evidence hashes: `t7_prediction.csv`; all output hashes: `manifest.json`.

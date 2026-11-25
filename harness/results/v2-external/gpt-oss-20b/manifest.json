@@ -1,7 +1,7 @@
 {
-  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; phase 3: Race (guided vs random selection, model vs historical-mean prediction); phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters; phase 4C: Cars T7 prediction adapters; phase 5C: Fix observed alternatives (Cars, Apache); phase 5D: Justify truthfulness; phase 5E: Remember shortlist quality; phase 5F: Certify agreement with the frozen statistical oracle; phase 5G: Flow streaming quality",
+  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; phase 3: Race (guided vs random selection, model vs historical-mean prediction); phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters; phase 4C: Cars T7 prediction adapters; phase 5C: Fix observed alternatives (Cars, Apache); phase 5D: Justify truthfulness; phase 5E: Remember shortlist quality; phase 5F: Certify agreement with the frozen statistical oracle; phase 5G: Flow streaming quality; phase 5H: Blame association quality",
   "status": "post-observation (added after the Task Talk; not pre-registered)",
-  "generated_utc": "2026-11-25T15:16:51+00:00",
+  "generated_utc": "2026-11-25T15:29:15+00:00",
   "command": "python -m harness.external",
   "model": "gpt-oss-20b",
   "protocol": {
@@ -314,6 +314,33 @@
       "integrity_valid": "ran, ANSWER accepted by the frozen format check, and for -07 the archived future rerun passed (fail = earlier decisions changed when only later arrivals changed; unverified = the rerun crashed, timed out or was not run, excluded); for -08 no shortlisted row from the future",
       "success": "the frozen checker's own base checks all pass (recomputed); quality metrics are reported alongside",
       "counting": "one attempt per trial; arrivals and checkpoints are not independent trials"
+    },
+    "blame": {
+      "status": "post-hoc (added after the Task Talk); associations are recomputed with the frozen oracle's own measures; these are associations in recorded data, not causal attributions",
+      "requests": {
+        "cars": [
+          "CAR-09",
+          "CAR-10"
+        ],
+        "nasa": [
+          "NASA-09",
+          "NASA-10"
+        ],
+        "apache": [
+          "APACHE-09",
+          "APACHE-10"
+        ]
+      },
+      "kinds": "CAR-09, NASA-09, APACHE-09 blame_rank (poor rows + feature ranking); CAR-10, NASA-10 blame_contrast (bad/good rows + typical-value differences, biggest first); APACHE-10 blame_combos (bad/good rows + setting combinations with shares)",
+      "association": "delta reference = harness.oracle.association: |Cliff's delta| of the feature (numbers, NASA ratings as ordinals; other symbols excluded) between the program's poor/bad rows and the rest/good rows. rho reference = |Spearman| of the feature with the outcome over all rows (harness.oracle.correlation; for CAR-10's overall outcome, with d2h). rho does not depend on the program's groups",
+      "candidate_pool": "inputs only when every ranked feature is an input, otherwise every non-goal column (the frozen checker's _top3 accepts either pool)",
+      "ranking_metrics": "top3 = harness.oracle.top_k(scores, 3) (ties included, so it can hold more than 3); top3_overlap = |first 3 ranked \u2229 top3| / 3; strongest_hit = a top_k(scores, 1) feature is among the first 3 ranked; first_in_top3 = the frozen checker's own rule for one reference; spearman = rank agreement between ranked order and scores over ranked features with a score, only when at least 4 (post-hoc minimum); chance_top3_overlap = expected overlap of 3 random candidates = min(1, |top3| / scored candidates)",
+      "circularity": "first_in_top3 repeats the frozen pass rule (oracle agreement). top-3 overlap, strongest hit and spearman extend the same oracle measures to the rest of the ranking; none is independent ground truth. The delta reference uses the program's own groups",
+      "groups": "membership is checked against the CSV: sizes, overlap, every poor row worse than the median outcome (frozen blame_rank rule), bad_median_percentile = median share of rows with a strictly better outcome score, outcome_delta = Cliff's delta of the outcome score (lower = better; d2h for overall) between bad and good/rest rows, positive = bad worse",
+      "contrast_values": "each reported bad/good typical value is recomputed (mean or any median for numbers, a mode otherwise, as the frozen checker accepts); false_values = values that disagree",
+      "combinations": "shares recomputed (frozen tolerance 0.011); first_combo_lift = bad share - good share; best_pair_lift = the largest lift over every 2-setting combination of inputs (post-hoc omission check); lift_ratio = first / best; combos_worse_overall = combinations whose matching rows have a worse median outcome than the non-matching rows over all rows (independent of the program's groups)",
+      "integrity_valid": "ran and ANSWER accepted by the frozen format check; reported values are summaries recomputed here, not cited cells, so incorrect values are quality findings, not gates; shuffled rerun recorded, not gating",
+      "success": "the frozen checker's base checks all pass (recomputed); delivery = successes / all attempts"
     }
   },
   "inputs": {
@@ -356,8 +383,8 @@
     "code": {
       "external": {
         "path": "harness/external.py",
-        "sha256": "1c62568b0050f4d3d215430fae271eeffe628b04dbaf4718bc49fdb6c1ab57ec",
-        "bytes": 236012
+        "sha256": "3e8326208cc952457b7251c75761755d023c3d24a8b3082d461b6c8633937783",
+        "bytes": 266348
       },
       "answers": {
         "path": "harness/answers.py",
@@ -499,7 +526,7 @@
     }
   },
   "git": {
-    "commit": "3e9e0f0969eaf2752af9ad70df2b118dcdb165ec",
+    "commit": "77dd4321306489cf77ea5640d96d5571453abb85",
     "branch": "analysis/external-metrics",
     "dirty": true
   },
@@ -516,7 +543,7 @@
       "sha256": "bfdf4537a3c13346996dbd2b9c6499ec6e5da58424e4827ca37ee7b8a7b222cd"
     },
     "prediction_report.md": {
-      "sha256": "11b5be7ffb61db43c1a7d0b38e09f5aef9b60f40a2660c57c3bfa4801e40c86b"
+      "sha256": "6d7ccdc85ecb67bf55b69c3e31969e39587894eae5cb53110b81fe00b3d23d43"
     },
     "selection_quality.csv": {
       "sha256": "35479bc46e332515390b91ffe682fe249924012c89835ab9633f249db6a65dda"
@@ -525,7 +552,7 @@
       "sha256": "3ecb40ca54175f50950b4ed8150d1ef79bf83a3eaded5591c8f59596f90fcfb0"
     },
     "selection_report.md": {
-      "sha256": "8fdf6dd5959a57e36d41ab7555586eb59b8272e62e59c50db738f9c1ac2a62c9"
+      "sha256": "1234061e62e7c037b4a8fc12b5a11e3c8dad13c506b588d925915ab16853239c"
     },
     "race_selection.csv": {
       "sha256": "48487d69d56add1df70a6fd99aba8f5b56da4d4a272d9824fd6227f8bf08ca31"
@@ -537,13 +564,13 @@
       "sha256": "97b8d2880665321a8aa278ebd11e4b12d2dc546e3291fd87a1bae7cc6d0cc9b9"
     },
     "race_report.md": {
-      "sha256": "b379725e8f73b3cb4a4f562d136550252df3935773966440245e786c8ebcb717"
+      "sha256": "98ec0ee323937137ddb042489f639b9b0759cc6d65c59c3d50c0cceeeeacdc84"
     },
     "t7_prediction.csv": {
       "sha256": "5a571583769304a7996d28ab319cb9a4e5d45fafc1e3aaae328c324b9ef71034"
     },
     "t7_prediction_report.md": {
-      "sha256": "32005abafd40ebd1c28b17e00afc535cebc1d7c47c2329ccdce11093bf8de7f4"
+      "sha256": "c7f453bb75e7e89ee57aa9ccd971e85518cd21061782b55bb8650bd47a2e1e1d"
     },
     "fix_quality.csv": {
       "sha256": "1dcaee78d75cba27291c10c2d8b7f50383110671092d4c318fdb4c8f6acd90a1"
@@ -552,7 +579,7 @@
       "sha256": "9068946bc2a3c65d963cdff7b4d450ace7dfd2332bee6a30ba7234b54affce92"
     },
     "fix_report.md": {
-      "sha256": "e8feb2b8ba579c45dd698d394fd2a2eb9434c1225341a46ebb6d4e7ee6dfc941"
+      "sha256": "85594c8672c458b6a9d3c4aeee93a9839429869720d8bcd519904cd4cea07ea8"
     },
     "justify_quality.csv": {
       "sha256": "776656d556a3cda7cdbc059bcb7c8162db216f472150e232cac0c8be40a836fd"
@@ -561,7 +588,7 @@
       "sha256": "bdca193b453eef83d86ed325c9789a320536a63017d9b8bf50aea07714d7eaed"
     },
     "justify_report.md": {
-      "sha256": "97abab42cb284f469771adcc459fea8f5ba30aacde69608423a99dfce29872a9"
+      "sha256": "e32af8b5b6e657a096ad32bba027e02dbd09191f01c051abb0b2b4bded4f23d8"
     },
     "remember_quality.csv": {
       "sha256": "18284e1d182931af5a3806099cd74fa8d0ede9b2202505a3f638f72b03665b03"
@@ -570,7 +597,7 @@
       "sha256": "7e6236aef249cb0e4bbaaa1daff39de850d956636caf0c361e4f743654b002ce"
     },
     "remember_report.md": {
-      "sha256": "370a7058aae917403611340fc67e5169533a7f36f282adbfa2975d5c54eed9e0"
+      "sha256": "329ae6e0fbed664e763e45a466619496c7705282484180bbe99b6d4725d21f8e"
     },
     "certify_quality.csv": {
       "sha256": "ec7dbe8419a98888b8f02361234758f1cf04fdebe89fe6aa1c6b29c2cb3998ea"
@@ -579,7 +606,7 @@
       "sha256": "34621e5ef002238beb07932e5960cacf4b7d87278888a5d7b2c49cd3020c5bed"
     },
     "certify_report.md": {
-      "sha256": "8cde8ab2514f3d858f776d94ca1adbf2641820fcfb86685ed01f56cfda743179"
+      "sha256": "ca403a4c99fba27c70ae43a57515760423bd04649308b0f4d7eefbd844522c90"
     },
     "flow_quality.csv": {
       "sha256": "5479232ab0fd2235de5477973f727c20e22b56f33af54517985c4ab7a5e5b4ed"
@@ -588,7 +615,16 @@
       "sha256": "57f8232c46330850719eeae801546cfe3f6acb70ea56041bc70a8180511037ee"
     },
     "flow_report.md": {
-      "sha256": "cceb3799b6b297cdcc1466cc35043f97188f41b982f90d1ac24985228fcaad48"
+      "sha256": "d442913c9c2dfbfb45e2116ebc20a49926374d705bcb0507d7e028acdbcd7e82"
+    },
+    "blame_quality.csv": {
+      "sha256": "92ecce2c6e331c6e9f281446368ea0667a1dbe4f075d71332664273e35b44259"
+    },
+    "blame_summary.csv": {
+      "sha256": "c0fb34b7db3a871d127246e681b205e0cff5a558a5eaec40d6cbf01280c57542"
+    },
+    "blame_report.md": {
+      "sha256": "206f303b7027b2e681998f04b9b9d97a89ae32a27433db3fdcbcc9de3d2e585c"
     }
   }
 }

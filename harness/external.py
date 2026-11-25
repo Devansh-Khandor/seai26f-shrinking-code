@@ -2847,6 +2847,457 @@ def flow_report(rows, summary, manifest):
     return "\n".join(lines)
 
 
+# ---- phase 5H: Blame (skill 5), association quality --------------------------------
+
+BLAME_STEP = 5
+BLAME = {
+    "cars": ("CAR-09", "CAR-10"),
+    "nasa": ("NASA-09", "NASA-10"),
+    "apache": ("APACHE-09", "APACHE-10"),
+}
+MIN_RANK_FEATURES = 4      # post-hoc: Spearman rank agreement only with at least 4 comparable ranked features
+
+BLAME_FIELDS = [
+    "model", "domain", "treatment", "trial", "skill_index", "request_id", "kind", "outcome", "metric_type",
+    "step_status", "step_runs", "step_semantic", "request_status",
+    "check_runs", "check_timed_out", "answer_state", "answer_detail", "shuffled_gate", "integrity_valid",
+    "recomputable",
+    # groups
+    "n_bad", "n_good", "overlap_rows", "bad_all_worse_than_median", "bad_median_percentile", "outcome_delta",
+    "bad_is_worse_frozen",
+    # ranking
+    "ranking", "ranking_length", "candidate_pool", "n_candidates", "x_columns_ranked", "incomplete_ranking",
+    "delta_top3", "delta_top3_size", "delta_strongest", "delta_top3_overlap", "delta_strongest_hit",
+    "delta_first_in_top3", "delta_spearman", "rho_top3", "rho_top3_size", "rho_strongest", "rho_top3_overlap",
+    "rho_strongest_hit", "rho_first_in_top3", "rho_spearman", "spearman_n", "chance_top3_overlap",
+    # contrast values
+    "n_differences", "values_checked", "values_correct", "false_values",
+    # combinations
+    "n_combinations", "shares_correct", "false_share_claims", "first_combo_typical", "first_combo_lift",
+    "best_pair_lift", "lift_ratio", "combos_worse_overall", "median_combo_outcome_delta", "combo_detail",
+    "frozen_base_pass", "success", "primary", "exclusion_reason", "notes",
+    "check_entry", "check_crc32", "check_sha256", "semantic_entry", "semantic_sha256",
+]
+
+BLAME_PROTOCOL = {
+    "status": "post-hoc (added after the Task Talk); associations are recomputed with the frozen oracle's own "
+              "measures; these are associations in recorded data, not causal attributions",
+    "requests": {d: list(v) for d, v in BLAME.items()},
+    "kinds": "CAR-09, NASA-09, APACHE-09 blame_rank (poor rows + feature ranking); CAR-10, NASA-10 blame_contrast "
+             "(bad/good rows + typical-value differences, biggest first); APACHE-10 blame_combos (bad/good rows + "
+             "setting combinations with shares)",
+    "association": "delta reference = harness.oracle.association: |Cliff's delta| of the feature (numbers, NASA "
+                   "ratings as ordinals; other symbols excluded) between the program's poor/bad rows and the rest/good "
+                   "rows. rho reference = |Spearman| of the feature with the outcome over all rows "
+                   "(harness.oracle.correlation; for CAR-10's overall outcome, with d2h). rho does not depend on the "
+                   "program's groups",
+    "candidate_pool": "inputs only when every ranked feature is an input, otherwise every non-goal column (the frozen "
+                      "checker's _top3 accepts either pool)",
+    "ranking_metrics": "top3 = harness.oracle.top_k(scores, 3) (ties included, so it can hold more than 3); "
+                       "top3_overlap = |first 3 ranked ∩ top3| / 3; strongest_hit = a top_k(scores, 1) feature is among "
+                       "the first 3 ranked; first_in_top3 = the frozen checker's own rule for one reference; spearman "
+                       "= rank agreement between ranked order and scores over ranked features with a score, only when "
+                       "at least 4 (post-hoc minimum); chance_top3_overlap = expected overlap of 3 random candidates = "
+                       "min(1, |top3| / scored candidates)",
+    "circularity": "first_in_top3 repeats the frozen pass rule (oracle agreement). top-3 overlap, strongest hit and "
+                   "spearman extend the same oracle measures to the rest of the ranking; none is independent ground "
+                   "truth. The delta reference uses the program's own groups",
+    "groups": "membership is checked against the CSV: sizes, overlap, every poor row worse than the median outcome "
+              "(frozen blame_rank rule), bad_median_percentile = median share of rows with a strictly better outcome "
+              "score, outcome_delta = Cliff's delta of the outcome score (lower = better; d2h for overall) between bad "
+              "and good/rest rows, positive = bad worse",
+    "contrast_values": "each reported bad/good typical value is recomputed (mean or any median for numbers, a mode "
+                       "otherwise, as the frozen checker accepts); false_values = values that disagree",
+    "combinations": "shares recomputed (frozen tolerance 0.011); first_combo_lift = bad share - good share; "
+                    "best_pair_lift = the largest lift over every 2-setting combination of inputs (post-hoc omission "
+                    "check); lift_ratio = first / best; combos_worse_overall = combinations whose matching rows have a "
+                    "worse median outcome than the non-matching rows over all rows (independent of the program's groups)",
+    "integrity_valid": "ran and ANSWER accepted by the frozen format check; reported values are summaries recomputed "
+                       "here, not cited cells, so incorrect values are quality findings, not gates; shuffled rerun "
+                       "recorded, not gating",
+    "success": "the frozen checker's base checks all pass (recomputed); delivery = successes / all attempts",
+}
+
+
+def _outcome_score(data, outcome):
+    """{row: score} with lower = better: the named goal, or d2h for the overall outcome."""
+    if outcome:
+        w = 1 if outcome.endswith("+") else -1
+        return {r: -w * data.value(r, outcome) for r in range(1, data.n + 1) if data.value(r, outcome) is not None}
+    return O.d2h(data)
+
+
+def _rho(data, feature, score):
+    pairs = [(O.numeric(data.value(r, feature)), s) for r, s in score.items()]
+    pairs = [(a, b) for a, b in pairs if a is not None]
+    if len(pairs) < 3:
+        return None
+    return abs(O.spearman([a for a, _ in pairs], [b for _, b in pairs]))
+
+
+def ranking_quality(rank, scores, prefix):
+    """Agreement of a ranked feature list with oracle association SCORES (feature -> value or None)."""
+    top = O.top_k(scores, 3)
+    strongest = O.top_k(scores, 1)
+    lead = rank[:3]
+    comparable = [f for f in rank if scores.get(f) is not None]
+    out = {f"{prefix}_top3": ";".join(sorted(top)), f"{prefix}_top3_size": len(top),
+           f"{prefix}_strongest": ";".join(sorted(strongest)),
+           f"{prefix}_top3_overlap": len(set(lead) & top) / 3,
+           f"{prefix}_strongest_hit": bool(set(lead) & strongest), f"{prefix}_first_in_top3": rank[0] in top,
+           f"{prefix}_spearman": (O.spearman([-i for i in range(len(comparable))], [scores[f] for f in comparable])
+                                  if len(comparable) >= MIN_RANK_FEATURES else "")}
+    return out, len(comparable)
+
+
+def _groups(data, bad, good, score, outcome):
+    s = score
+    vals = list(s.values())
+    mid = O.median(data.values(outcome)) if outcome else None
+    pct = [sum(v < s[r] for v in vals) / len(vals) for r in bad if r in s]
+    xs, ys = [s[r] for r in bad if r in s], [s[r] for r in good if r in s]
+    return {"n_bad": len(bad), "n_good": len(good), "overlap_rows": len(set(bad) & set(good)),
+            "bad_all_worse_than_median": (all(O.worse(data, outcome, data.value(r, outcome), mid) for r in bad)
+                                          if outcome else ""),
+            "bad_median_percentile": O.median(pct) if pct else "",
+            "outcome_delta": O.cliffs_delta(xs, ys) if xs and ys else ""}
+
+
+def blame_metrics(data, kind, ans, params):
+    """Independent association metrics for one schema-valid Blame answer."""
+    if kind not in ("blame_rank", "blame_contrast", "blame_combos"):
+        raise ValueError(f"not a Blame kind: {kind}")
+    o = params.get("outcome")
+    score = _outcome_score(data, o)
+    feats, inputs = data.features(), set(data.inputs())
+    if kind == "blame_rank":
+        bad = A.rows(data, ans["poor"], "poor")
+        good = [r for r in range(1, data.n + 1) if r not in set(bad)]
+    else:
+        bad, good = A.rows(data, ans["bad"], "bad"), A.rows(data, ans["good"], "good")
+    m = _groups(data, bad, good, score, o)
+    m["outcome"] = o or "overall (d2h)"
+    m["recomputable"] = True
+    if kind in ("blame_rank", "blame_contrast"):
+        if kind == "blame_rank":
+            rank = [A.column(data, f, set(feats), "ranking entry") for f in ans["ranking"]]
+        else:
+            rank = [A.column(data, d["feature"], set(feats), "feature") for d in ans["differences"]]
+        pool = [f for f in feats if f in inputs] if all(f in inputs for f in rank) else feats
+        delta = {f: O.association(data, f, bad, good) for f in pool}
+        rho = {f: _rho(data, f, score) for f in pool}
+        dq, n_cmp = ranking_quality(rank, delta, "delta")
+        rq, _ = ranking_quality(rank, rho, "rho")
+        scored = sum(v is not None for v in delta.values())
+        top_n = dq["delta_top3_size"]
+        m.update(dq)
+        m.update(rq)
+        m.update(ranking=";".join(rank), ranking_length=len(rank),
+                 candidate_pool="inputs" if len(pool) < len(feats) else "all non-goal columns",
+                 n_candidates=len(pool), x_columns_ranked=sum(f not in inputs for f in rank),
+                 incomplete_ranking=len(rank) < scored, spearman_n=n_cmp,
+                 chance_top3_overlap=min(1.0, top_n / scored) if scored else "",
+                 metric_type="feature-ranking agreement with oracle associations")
+        if kind == "blame_contrast":
+            checked = correct = 0
+            for d in ans["differences"]:
+                f = A.column(data, d["feature"], set(feats))
+                for side, rs in (("bad", bad), ("good", good)):
+                    vs = data.values(f, rs)
+                    v = d[side]
+                    if data.is_numeric(f):
+                        ok = isinstance(v, (int, float)) and not isinstance(v, bool) and (
+                            O.close(float(v), O.mean(vs)) or any(O.close(float(v), x) for x in O.medians(vs)))
+                    else:
+                        top = max(vs.count(x) for x in vs)
+                        ok = str(v).strip().lower() in {x.strip().lower() for x in vs if vs.count(x) == top}
+                    checked += 1
+                    correct += ok
+            m.update(n_differences=len(ans["differences"]), values_checked=checked, values_correct=correct,
+                     false_values=checked - correct)
+        return m
+    if kind == "blame_combos":
+        ins = data.inputs()
+        share = lambda cond, rs: sum(all(data.value(r, k) == v for k, v in cond.items()) for r in rs) / len(rs)
+        ok_shares, lifts, worse, deltas, detail = 0, [], 0, [], []
+        allrows = list(range(1, data.n + 1))
+        for e in ans["combinations"]:
+            cond = {A.column(data, k, set(ins), "setting"): A.num(v) for k, v in e["settings"].items()}
+            sb, sg = share(cond, bad), share(cond, good)
+            ok = (O.close(A.num(e["bad_share"]), sb, abs_=0.011) and O.close(A.num(e["good_share"]), sg, abs_=0.011))
+            ok_shares += ok
+            lifts.append(sb - sg)
+            match = [r for r in allrows if all(data.value(r, k) == v for k, v in cond.items())]
+            rest = [r for r in allrows if r not in set(match)]
+            if match and rest:
+                dl = O.cliffs_delta([score[r] for r in match], [score[r] for r in rest])
+                deltas.append(dl)
+                w = O.median([score[r] for r in match]) > O.median([score[r] for r in rest])
+                worse += w
+            detail.append(f"{'&'.join(f'{k}={v:g}' for k, v in cond.items())}: bad {sb:.2f} good {sg:.2f} "
+                          f"matching {len(match)} {'shares ok' if ok else 'shares wrong'}")
+        best = max(share({a: va, b: vb}, bad) - share({a: va, b: vb}, good)
+                   for i, a in enumerate(ins) for b in ins[i + 1:] for va in (0.0, 1.0) for vb in (0.0, 1.0))
+        n = len(ans["combinations"])
+        m.update(n_combinations=n, shares_correct=ok_shares, false_share_claims=n - ok_shares,
+                 first_combo_typical=lifts[0] > 0, first_combo_lift=lifts[0], best_pair_lift=best,
+                 lift_ratio=lifts[0] / best if best > 0 else "", combos_worse_overall=worse,
+                 median_combo_outcome_delta=O.median(deltas) if deltas else "", combo_detail="; ".join(detail),
+                 metric_type="setting-combination association with poor performance")
+    return m
+
+
+def _blame_row(z, names, root, model, domain, t, k, rid, data, runs, reqs):
+    kind, params = A.REQUESTS[rid]
+    row, ctx, ans, sem = _attempt(z, names, root, model, domain, t, k, BLAME_STEP, rid, data, runs, reqs,
+                                  BLAME_FIELDS, dict(kind=kind, outcome=params.get("outcome", "overall"),
+                                                     shuffled_gate="not_run", integrity_valid=False,
+                                                     recomputable=False, success=False))
+    if ctx is None:
+        return row
+    row["shuffled_gate"] = shuffled_gate(sem, rid)
+    row.update(blame_metrics(data, kind, ans, params))
+    row["bad_is_worse_frozen"] = not any(not ok and n.endswith("rows are worse") or not ok and n.endswith("are poor")
+                                         for n, ok, _ in ctx.items)
+    row["frozen_base_pass"] = all(ok for _, ok, _ in ctx.items)
+    row.update(integrity_valid=True, primary=True, success=row["frozen_base_pass"])
+    return row
+
+
+def extract_blame(archive=ARCHIVE, runs_csv=RUNS_CSV, requirements_csv=REQUIREMENTS_CSV, data_dir=DATA_DIR,
+                  model=MODEL, domains=DOMAINS):
+    runs = _index(runs_csv, ("model", "domain", "treatment", "trial", "skill_index"))
+    reqs = _index(requirements_csv, ("model", "domain", "treatment", "trial", "request_id"))
+    rows = []
+    with zipfile.ZipFile(archive) as z:
+        names = set(z.namelist())
+        root = archive_root(names, model)
+        for domain in domains:
+            if set(BLAME[domain]) != set(request_ids(domain, BLAME_STEP)):
+                raise ValueError(f"{BLAME[domain]} are not the frozen Blame requests of {domain}")
+            data = O.load(Path(data_dir) / DATASETS[domain])
+            for rid in BLAME[domain]:
+                for t in TREATMENTS:
+                    for k in TRIALS:
+                        rows.append(_blame_row(z, names, root, model, domain, t, k, rid, data, runs, reqs))
+    keys = [(r["domain"], r["treatment"], r["trial"], r["request_id"]) for r in rows]
+    if len(keys) != len(set(keys)):
+        raise ValueError("duplicate trial records")
+    return rows
+
+
+BLAME_SUMMARY_FIELDS = [
+    "scope", "domain", "treatment", "request_id", "kind",
+    "attempted", "executable", "schema_valid", "integrity_valid", "successful",
+    "generation_failed", "execution_failed", "answer_missing", "answer_invalid_json", "answer_schema_error",
+    "shuffled_failed_among_valid", "delivery_rate", "conditional_success_rate",
+    "n_candidates", "median_ranking_length", "chance_top3_overlap",
+    "median_delta_top3_overlap", "delta_strongest_hits", "delta_first_in_top3",
+    "median_rho_top3_overlap", "rho_strongest_hits", "rho_first_in_top3",
+    "spearman_answers", "median_delta_spearman", "median_rho_spearman",
+    "median_bad_percentile", "median_outcome_delta", "bad_not_worse", "overlapping_groups",
+    "false_values", "values_checked", "false_share_claims", "first_combo_typical", "median_lift_ratio",
+    "combos_worse_overall", "combinations",
+]
+
+
+def _blame_cell(scope, domain, treatment, rid, sel):
+    prim = [r for r in sel if r["primary"]]
+    succ = sum(bool(r["success"]) for r in prim)
+    reasons = [r["exclusion_reason"] for r in sel]
+    return {
+        "scope": scope, "domain": domain, "treatment": treatment, "request_id": rid, "kind": A.REQUESTS[rid][0],
+        "attempted": len(sel), "executable": sum(r["check_runs"] is True for r in sel),
+        "schema_valid": sum(r["answer_state"] == "valid" for r in sel), "integrity_valid": len(prim), "successful": succ,
+        "generation_failed": reasons.count("generation_failed") + reasons.count("not_attempted"),
+        "execution_failed": reasons.count("execution_failure") + reasons.count("execution_timeout"),
+        "answer_missing": reasons.count("answer_missing"), "answer_invalid_json": reasons.count("answer_invalid_json"),
+        "answer_schema_error": reasons.count("answer_schema_error"),
+        "shuffled_failed_among_valid": sum(r["shuffled_gate"] == "fail" for r in prim),
+        "delivery_rate": _rate(succ, len(sel)), "conditional_success_rate": _rate(succ, len(prim)),
+        "n_candidates": "/".join(str(x) for x in sorted({r["n_candidates"] for r in prim if r["n_candidates"] != ""})),
+        "median_ranking_length": _med([r["ranking_length"] for r in prim]),
+        "chance_top3_overlap": _med([r["chance_top3_overlap"] for r in prim]),
+        "median_delta_top3_overlap": _med([r["delta_top3_overlap"] for r in prim]),
+        "delta_strongest_hits": sum(r["delta_strongest_hit"] is True for r in prim),
+        "delta_first_in_top3": sum(r["delta_first_in_top3"] is True for r in prim),
+        "median_rho_top3_overlap": _med([r["rho_top3_overlap"] for r in prim]),
+        "rho_strongest_hits": sum(r["rho_strongest_hit"] is True for r in prim),
+        "rho_first_in_top3": sum(r["rho_first_in_top3"] is True for r in prim),
+        "spearman_answers": sum(r["delta_spearman"] != "" for r in prim),
+        "median_delta_spearman": _med([r["delta_spearman"] for r in prim]),
+        "median_rho_spearman": _med([r["rho_spearman"] for r in prim]),
+        "median_bad_percentile": _med([r["bad_median_percentile"] for r in prim]),
+        "median_outcome_delta": _med([r["outcome_delta"] for r in prim]),
+        "bad_not_worse": sum(r["bad_is_worse_frozen"] is False for r in prim),
+        "overlapping_groups": sum((r["overlap_rows"] or 0) > 0 for r in prim),
+        "false_values": sum(r["false_values"] or 0 for r in prim),
+        "values_checked": sum(r["values_checked"] or 0 for r in prim),
+        "false_share_claims": sum(r["false_share_claims"] or 0 for r in prim),
+        "first_combo_typical": sum(r["first_combo_typical"] is True for r in prim),
+        "median_lift_ratio": _med([r["lift_ratio"] for r in prim]),
+        "combos_worse_overall": sum(r["combos_worse_overall"] or 0 for r in prim),
+        "combinations": sum(r["n_combinations"] or 0 for r in prim),
+    }
+
+
+def summarize_blame(rows):
+    out = []
+    for d in DOMAINS:
+        for rid in BLAME[d]:
+            for t in TREATMENTS:
+                sel = [r for r in rows if r["domain"] == d and r["treatment"] == t and r["request_id"] == rid]
+                if sel:
+                    out.append(_blame_cell("domain_treatment", d, t, rid, sel))
+            sel = [r for r in rows if r["domain"] == d and r["request_id"] == rid]
+            if sel:
+                out.append(_blame_cell("domain", d, "all", rid, sel))
+    return out
+
+
+def blame_reference_table(data_dir=DATA_DIR, domains=DOMAINS):
+    """The program-independent reference: |Spearman| of each candidate feature with the outcome over all rows."""
+    out = []
+    for d in domains:
+        data = O.load(Path(data_dir) / DATASETS[d])
+        for rid in BLAME[d]:
+            o = A.REQUESTS[rid][1].get("outcome")
+            score = _outcome_score(data, o)
+            rho = {f: _rho(data, f, score) for f in data.features()}
+            ranked = sorted((f for f in rho if rho[f] is not None), key=lambda f: -rho[f])
+            ins = [f for f in ranked if f in set(data.inputs())]
+            out.append({"domain": d, "request_id": rid, "outcome": o or "overall (d2h)",
+                        "scored": len(ranked), "unscored": ";".join(f for f in rho if rho[f] is None),
+                        "top": "; ".join(f"{f} {rho[f]:.2f}" for f in ranked[:5]),
+                        "top_inputs": "; ".join(f"{f} {rho[f]:.2f}" for f in ins[:5])})
+    return out
+
+
+T7_BLAME_NOTES = [
+    "NASA and Apache have Blame adapters (`t7_validation/adapters/{nasa,apache}/blame.py`) that print the common "
+    "ANSWER lines; they could be scored later with blame_metrics after an approved adapter run (the definitions use "
+    "only the answer and the CSV).",
+    "Cars has no Blame adapter, so CAR-09/10 cannot be scored for T7 without new orchestration code.",
+]
+
+
+def blame_report(rows, summary, manifest, refs):
+    cells = [s for s in summary if s["scope"] == "domain_treatment"]
+    doms = [s for s in summary if s["scope"] == "domain"]
+    lines = [
+        "# External metric, phase 5H: Blame — do the programs name characteristics really associated with poor "
+        "results?",
+        "",
+        "**Status: post-observation analysis.** Added after the Task Talk; not part of the pre-registered plan in "
+        "`docs/hypotheses.md`. Associations are recomputed with the frozen oracle's own measures.",
+        "",
+        "**Association, not causation.** Every measure here is an association in recorded rows. None says that "
+        "changing a setting or characteristic would change an outcome.",
+        "",
+        "**Two references.** *delta*: |Cliff's delta| of each feature between the program's poor/bad rows and the "
+        "rest/good rows (`harness.oracle.association`; it depends on the program's own groups). *rho*: |Spearman| of "
+        "each feature with the outcome over all rows (`harness.oracle.correlation`; d2h for CAR-10's overall outcome); "
+        "it does not depend on the program. Symbolic columns that are not ratings have no score.",
+        "",
+        "**Ranking metrics.** Top-3 sets include ties. *Top-3 overlap* = share of the program's first three features "
+        "in the oracle top 3. *Strongest hit* = an oracle-strongest feature is among the first three. *First in top "
+        "3* is the frozen checker's own pass rule (oracle agreement, not independent truth). *Spearman* is computed "
+        "only with at least 4 comparable ranked features (post-hoc minimum). *Chance* = the overlap expected from 3 "
+        "random candidates.",
+        "",
+        "**Groups and combinations.** Membership is checked against the CSV. *Outcome delta* = Cliff's delta of the "
+        "outcome score between bad and good/rest rows (positive = bad worse). Contrast values and combination shares "
+        "are recomputed; wrong ones are false claims. For APACHE-10, *lift* = bad share - good share, compared with the "
+        "best 2-setting combination (post-hoc omission check), and each combination is checked against all rows.",
+        "",
+        "**Integrity and success.** Integrity-valid = ran and passed the frozen format check; the shuffled rerun is "
+        "recorded only. *Success* = all frozen base checks pass; *delivery* = successes / all attempts.",
+        "",
+        "## Program-independent reference (|Spearman| with the outcome, all rows)",
+        "",
+        "| request | outcome | scored features | strongest five (all non-goal columns) | strongest five (inputs only) |",
+        "|---|---|---:|---|---|",
+    ]
+    for x in refs:
+        lines.append(f"| {x['request_id']} | {x['outcome']} | {x['scored']} | {x['top']} | {x['top_inputs']} |")
+    lines += ["", "Columns ending in X (identifiers, dates, durations) are not model inputs under the protocol. In NASA "
+              "they dominate the all-column ranking (project duration, centre, id), so a ranking that leads with them "
+              "agrees with the oracle while naming characteristics that are not usable planning inputs.", ""]
+    for d in DOMAINS:
+        for rid in BLAME[d]:
+            kind = A.REQUESTS[rid][0]
+            sel = [x for x in cells if x["request_id"] == rid]
+            lines += [f"## {rid} (`{kind}`)", ""]
+            if kind in ("blame_rank", "blame_contrast"):
+                extra = " false values / checked |" if kind == "blame_contrast" else ""
+                lines += ["| T | attempted | executable | valid | candidates | chance | delta top-3 overlap | delta "
+                          "strongest | rho top-3 overlap | rho strongest | first in top 3 (delta/rho) | spearman "
+                          "(delta/rho, n) | bad percentile | outcome delta |" + extra + " successful | delivery |",
+                          "|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---|---|---:|---:|" +
+                          ("---|" if extra else "") + "---:|---:|"]
+                for s in sel:
+                    sp = (f"{_num(s['median_delta_spearman'], '.2f')}/{_num(s['median_rho_spearman'], '.2f')}, "
+                          f"{s['spearman_answers']}")
+                    ev = f" {s['false_values']} / {s['values_checked']} |" if extra else ""
+                    lines.append(f"| {s['treatment']} | {s['attempted']} | {s['executable']} | {s['integrity_valid']} | "
+                                 f"{s['n_candidates'] or '—'} | {_num(s['chance_top3_overlap'], '.2f')} | "
+                                 f"{_num(s['median_delta_top3_overlap'], '.2f')} | {s['delta_strongest_hits']} | "
+                                 f"{_num(s['median_rho_top3_overlap'], '.2f')} | {s['rho_strongest_hits']} | "
+                                 f"{s['delta_first_in_top3']}/{s['rho_first_in_top3']} | {sp} | "
+                                 f"{_num(s['median_bad_percentile'], '.2f')} | {_num(s['median_outcome_delta'], '.2f')} "
+                                 f"|{ev} {s['successful']} | {_pct(s['delivery_rate'])} |")
+            else:
+                lines += ["| T | attempted | executable | valid | combinations | false share claims | first typical of "
+                          "bad | median lift / best | worse over all rows | bad percentile | outcome delta | "
+                          "successful | delivery |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+                for s in sel:
+                    lines.append(f"| {s['treatment']} | {s['attempted']} | {s['executable']} | {s['integrity_valid']} | "
+                                 f"{s['combinations']} | {s['false_share_claims']} | {s['first_combo_typical']} | "
+                                 f"{_num(s['median_lift_ratio'], '.2f')} | {s['combos_worse_overall']} | "
+                                 f"{_num(s['median_bad_percentile'], '.2f')} | {_num(s['median_outcome_delta'], '.2f')} "
+                                 f"| {s['successful']} | {_pct(s['delivery_rate'])} |")
+            lines.append("")
+    lines += ["## By domain and request", "",
+              "| domain | request | attempted | executable | schema valid | integrity valid | successful | delivery | "
+              "conditional | crashes | schema errors | invalid JSON | missing | shuffled failures (valid) |",
+              "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    for s in doms:
+        lines.append(f"| {s['domain']} | {s['request_id']} | {s['attempted']} | {s['executable']} | {s['schema_valid']} | "
+                     f"{s['integrity_valid']} | {s['successful']} | {_pct(s['delivery_rate'])} | "
+                     f"{_pct(s['conditional_success_rate'])} | {s['execution_failed'] + s['generation_failed']} | "
+                     f"{s['answer_schema_error']} | {s['answer_invalid_json']} | {s['answer_missing']} | "
+                     f"{s['shuffled_failed_among_valid']} |")
+    lines += [
+        "", "## Limitations", "",
+        "- **Association, not causation.** A strongly associated feature may be a proxy (for example model year or "
+        "cylinders for weight); nothing here supports changing it to improve an outcome.",
+        "- **Oracle agreement, not expert ground truth.** The references are the frozen oracle's own measures; no "
+        "expert ranking exists. 'First in top 3' repeats the frozen pass rule.",
+        "- **Few candidates make overlap easy.** Cars has 5 non-goal columns (4 inputs), so 3 random features already "
+        "overlap most of the top 3; compare every overlap with the chance column.",
+        "- **The delta reference depends on the program's own groups**; the rho reference does not, but it measures "
+        "association with the outcome over all rows rather than with the program's 'poor' definition.",
+        "- **Short rankings.** Most rankings list only 3 features, so rank agreement is rarely computable.",
+        "- **Identifiers pass.** A ranking that leads with X columns such as a project id or duration (`idX`, "
+        "`MonthsX`) agrees with the all-column oracle and passes the frozen rule, though it names nothing a planner "
+        "could act on; x_columns_ranked records it.",
+        "- **Tiny groups.** Several NASA answers use the minimum 5 poor/bad rows, so their delta reference rests on 5 "
+        "rows.",
+        "- **Three trials per cell, often fewer usable.** No statistical test is applied.",
+        "- **T7 is not executed in this phase.**",
+    ]
+    lines += [f"  - {n}" for n in T7_BLAME_NOTES]
+    lines += [
+        "", "## Provenance", "",
+        f"- Archive: `{manifest['inputs']['archive']['path']}` (sha256 `{manifest['inputs']['archive']['sha256']}`)",
+        f"- Code commit: `{manifest['git']['commit']}` on `{manifest['git']['branch']}`"
+        f"{' (uncommitted changes present)' if manifest['git']['dirty'] else ''}",
+        f"- Command: `{manifest['command']}`",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 # ---- phase 4B: T7 prediction through the existing validation adapters ----------------
 
 T7_PROTOCOL = "v2-common: every-fifth-row hold-out, training-mean baseline (t7_validation adapter)"
@@ -3373,7 +3824,8 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
                     "phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters; "
                     "phase 4C: Cars T7 prediction adapters; phase 5C: Fix observed alternatives (Cars, Apache); "
                     "phase 5D: Justify truthfulness; phase 5E: Remember shortlist quality; "
-                    "phase 5F: Certify agreement with the frozen statistical oracle; phase 5G: Flow streaming quality",
+                    "phase 5F: Certify agreement with the frozen statistical oracle; phase 5G: Flow streaming quality; "
+                    "phase 5H: Blame association quality",
         "status": "post-observation (added after the Task Talk; not pre-registered)",
         "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "command": "python -m harness.external" + (" " + " ".join(argv) if argv else ""),
@@ -3398,6 +3850,7 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
             "remember": REMEMBER_PROTOCOL,
             "certify": CERTIFY_PROTOCOL,
             "flow": FLOW_PROTOCOL,
+            "blame": BLAME_PROTOCOL,
         },
         "inputs": {
             "archive": _file_info(archive),
@@ -3729,7 +4182,7 @@ def race_report(sel_rows, pred_rows, summary, manifest):
 
 
 def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=None, race=None, t7=None, fix=None,
-                  justify=None, remember=None, certify=None, flow=None):
+                  justify=None, remember=None, certify=None, flow=None, blame=None):
     out = guard_out(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     files = {
@@ -3791,6 +4244,13 @@ def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=N
             "flow_summary.csv": to_csv(lsum, FLOW_SUMMARY_FIELDS),
             "flow_report.md": flow_report(lrows, lsum, manifest),
         })
+    if blame is not None:
+        brows, bsum, brefs = blame
+        files.update({
+            "blame_quality.csv": to_csv(brows, BLAME_FIELDS),
+            "blame_summary.csv": to_csv(bsum, BLAME_SUMMARY_FIELDS),
+            "blame_report.md": blame_report(brows, bsum, manifest, brefs),
+        })
     for name, text in files.items():
         (out / name).write_text(text, encoding="utf-8")
     manifest = dict(manifest, outputs={n: {"sha256": _sha(t.encode("utf-8"))} for n, t in files.items()})
@@ -3827,11 +4287,13 @@ def main(argv=None):
     rem = extract_remember(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
     cert = extract_certify(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
     flow = extract_flow(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
+    blame = extract_blame(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
     out = write_outputs(a.out, rows, summary, manifest, sel, sel_summary, (rsel, rpred, summarize_race(rsel, rpred)),
                         t7, (fix, summarize_fix(fix)), (just, summarize_justify(just)),
                         (rem, summarize_remember(rem)),
                         (cert, summarize_certify(cert), certify_reference_table(a.data_dir, domains)),
-                        (flow, summarize_flow(flow)))
+                        (flow, summarize_flow(flow)),
+                        (blame, summarize_blame(blame), blame_reference_table(a.data_dir, domains)))
     print(f"prediction: {len(rows)} attempts, {sum(r['primary'] for r in rows)} in the primary metric")
     print(f"selection:  {len(sel)} attempts, {sum(r['primary'] for r in sel)} in the primary metric")
     print(f"race selection:  {len(rsel)} attempts, {sum(r['primary'] for r in rsel)} in the primary metric")
@@ -3846,6 +4308,8 @@ def main(argv=None):
           f"{sum(bool(r['success']) for r in cert)} oracle-consistent")
     print(f"flow:            {len(flow)} attempts, {sum(r['primary'] for r in flow)} integrity-valid, "
           f"{sum(bool(r['success']) for r in flow)} successful")
+    print(f"blame:           {len(blame)} attempts, {sum(r['primary'] for r in blame)} integrity-valid, "
+          f"{sum(bool(r['success']) for r in blame)} successful")
     if t7 is not None:
         print(f"T7 prediction:   {len(t7)} requests, {sum(r['primary'] for r in t7)} in the primary metric")
     print(f"wrote {out}")

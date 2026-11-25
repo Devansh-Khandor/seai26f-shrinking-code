@@ -469,7 +469,8 @@ class TestOutputs(unittest.TestCase):
                               "justify_quality.csv", "justify_summary.csv", "justify_report.md",
                               "remember_quality.csv", "remember_summary.csv", "remember_report.md",
                               "certify_quality.csv", "certify_summary.csv", "certify_report.md",
-                              "flow_quality.csv", "flow_summary.csv", "flow_report.md"})
+                              "flow_quality.csv", "flow_summary.csv", "flow_report.md",
+                              "blame_quality.csv", "blame_summary.csv", "blame_report.md"})
             self.assertEqual({p: sha(p) for p in before}, before)
             with open(out / "prediction_mae.csv", newline="") as f:
                 got = list(csv.DictReader(f))
@@ -2476,4 +2477,239 @@ class TestFlowRealArchive(unittest.TestCase):
 
     def test_reproducible_and_untouched(self):
         self.assertEqual(E.to_csv(self.rows, E.FLOW_FIELDS), E.to_csv(self.again, E.FLOW_FIELDS))
+        self.assertEqual(sha(E.ARCHIVE), self.before)
+
+
+# ---- phase 5H: Blame -----------------------------------------------------------------
+
+# Volume tracks Mpg+ perfectly (bigger = worse), Clndrs partly, origin is a non-rating symbol (no score),
+# rating is a NASA-style ordinal; Lbs- is a second goal.
+BLAME_CSV = "Clndrs,Volume,origin,rating,HpX,Lbs-,Mpg+\n" + "".join(
+    f"{4 if i < 6 else 8},{100 + 10 * i},{'us' if i % 2 else 'eu'},{['l', 'n', 'h'][i % 3]},{50 + i},"
+    f"{2000 + 100 * i},{40 - i}\n" for i in range(12))
+RANK = {"outcome": "Mpg+"}
+
+
+def _blame_rank_ans(poor, ranking):
+    return {"poor": poor, "ranking": ranking}
+
+
+def _contrast_ans(data, bad, good, feats, wrong=()):
+    diffs = []
+    for f in feats:
+        e = {"feature": f}
+        for side, rs in (("bad", bad), ("good", good)):
+            vs = data.values(f, rs)
+            e[side] = O.mean(vs) if data.is_numeric(f) else max(set(vs), key=vs.count)
+            if (f, side) in wrong:
+                e[side] = e[side] + 999 if data.is_numeric(f) else "zz"
+        diffs.append(e)
+    return {"bad": bad, "good": good, "differences": diffs}
+
+
+class TestBlameRanking(unittest.TestCase):
+    def test_overlap_strongest_and_ties(self):
+        scores = {"a": 0.9, "b": 0.8, "c": 0.8, "d": 0.8, "e": 0.1, "f": None}
+        q, n = E.ranking_quality(["e", "b", "a"], scores, "x")
+        self.assertEqual((q["x_top3"], q["x_top3_size"], q["x_strongest"]), ("a;b;c;d", 4, "a"))
+        self.assertAlmostEqual(q["x_top3_overlap"], 2 / 3)
+        self.assertTrue(q["x_strongest_hit"])
+        self.assertFalse(q["x_first_in_top3"])
+        self.assertEqual((q["x_spearman"], n), ("", 3))           # three comparable features: no rank agreement
+        miss, _ = E.ranking_quality(["c", "d", "e"], scores, "x")
+        self.assertFalse(miss["x_strongest_hit"])
+        self.assertTrue(miss["x_first_in_top3"])                  # a tied member of the top 3 counts
+
+    def test_spearman_only_when_enough_features(self):
+        scores = {"a": 0.9, "b": 0.7, "c": 0.5, "d": 0.3, "e": None}
+        self.assertAlmostEqual(E.ranking_quality(["a", "b", "c", "d"], scores, "x")[0]["x_spearman"], 1.0)
+        self.assertAlmostEqual(E.ranking_quality(["d", "c", "b", "a"], scores, "x")[0]["x_spearman"], -1.0)
+        q, n = E.ranking_quality(["a", "b", "c", "e"], scores, "x")   # unscored feature is not comparable
+        self.assertEqual((q["x_spearman"], n), ("", 3))
+
+
+class TestBlameMetrics(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.d = _data(BLAME_CSV)
+
+    def test_rank_groups_and_scores(self):
+        poor = [8, 9, 10, 11, 12]                                  # lowest Mpg+
+        m = E.blame_metrics(self.d, "blame_rank", _blame_rank_ans(poor, ["Volume", "Clndrs", "origin"]), RANK)
+        self.assertEqual((m["n_bad"], m["n_good"], m["overlap_rows"]), (5, 7, 0))
+        self.assertTrue(m["bad_all_worse_than_median"])
+        self.assertEqual(m["outcome_delta"], 1.0)                  # every poor row worse than every other row
+        self.assertEqual(m["candidate_pool"], "inputs")
+        self.assertEqual(m["n_candidates"], 4)                     # Clndrs, Volume, origin, rating (HpX not an input)
+        self.assertIn("Volume", m["rho_strongest"].split(";"))
+        self.assertNotIn("origin", m["rho_top3"].split(";"))       # non-rating symbol has no score
+        self.assertTrue(m["rho_strongest_hit"])
+        self.assertFalse(m["incomplete_ranking"])                  # all 3 scored inputs are ranked
+        self.assertEqual(m["chance_top3_overlap"], min(1.0, m["delta_top3_size"] / 3))
+
+    def test_ordinal_ratings_are_scored(self):
+        self.assertIsNotNone(O.association(self.d, "rating", [1, 2, 3], [4, 5, 6]))
+        self.assertIsNone(O.association(self.d, "origin", [1, 2, 3], [4, 5, 6]))
+        m = E.blame_metrics(self.d, "blame_rank", _blame_rank_ans([8, 9, 10, 11, 12], ["HpX", "Volume", "rating"]),
+                            RANK)
+        self.assertEqual((m["candidate_pool"], m["x_columns_ranked"]), ("all non-goal columns", 1))
+        self.assertTrue(m["incomplete_ranking"])                   # Clndrs is scored but not ranked
+
+    def test_goal_direction(self):
+        # for Lbs- (minimised), poor = heaviest; the same rows are poor for Mpg+ in this file
+        lbs = {"outcome": "Lbs-"}
+        heavy = E.blame_metrics(self.d, "blame_rank", _blame_rank_ans([8, 9, 10, 11, 12], ["Volume", "Clndrs",
+                                                                                          "rating"]), lbs)
+        self.assertTrue(heavy["bad_all_worse_than_median"])
+        self.assertGreater(heavy["outcome_delta"], 0)
+        light = E.blame_metrics(self.d, "blame_rank", _blame_rank_ans([1, 2, 3, 4, 5], ["Volume", "Clndrs",
+                                                                                       "rating"]), lbs)
+        self.assertFalse(light["bad_all_worse_than_median"])
+        self.assertLess(light["outcome_delta"], 0)
+        self.assertGreater(light["bad_median_percentile"], -1)
+        self.assertLess(light["bad_median_percentile"], heavy["bad_median_percentile"])
+
+    def test_contrast_values_and_frozen_agreement(self):
+        bad, good = [8, 9, 10, 11, 12], [1, 2, 3, 4, 5]
+        feats = ["Volume", "Clndrs", "origin"]
+        ok = _contrast_ans(self.d, bad, good, feats)
+        m = E.blame_metrics(self.d, "blame_contrast", ok, {"outcome": "Mpg+"})
+        self.assertEqual((m["n_differences"], m["values_checked"], m["false_values"]), (3, 6, 0))
+        wrong = _contrast_ans(self.d, bad, good, feats, wrong={("Volume", "bad"), ("origin", "good")})
+        m = E.blame_metrics(self.d, "blame_contrast", wrong, {"outcome": "Mpg+"})
+        self.assertEqual(m["false_values"], 2)
+        # the frozen value check, applied through the CAR-10 kind (overall outcome)
+        items = A.check_request("CAR-10", self.d, wrong).items
+        self.assertEqual(sum(not ok_ and n.endswith(" value") for n, ok_, _ in items), m["false_values"])
+
+    def test_overlapping_groups(self):
+        ans = _contrast_ans(self.d, [7, 8, 9, 10, 11, 12], [1, 2, 3, 4, 7], ["Volume", "Clndrs", "rating"])
+        m = E.blame_metrics(self.d, "blame_contrast", ans, {})
+        self.assertEqual((m["overlap_rows"], m["outcome"]), (1, "overall (d2h)"))
+
+    def test_combinations(self):
+        csv_ = "a,b,c,Performance-\n" + "".join(
+            f"{a},{b},{c},{100 + 50 * (a and b) + i}\n" for i, (a, b, c) in enumerate(
+                [(1, 1, 0), (1, 1, 1), (1, 1, 0), (1, 1, 1), (1, 1, 0), (0, 0, 1), (0, 1, 0), (1, 0, 1), (0, 0, 0),
+                 (0, 1, 1), (1, 0, 0), (0, 0, 1)]))
+        d = _data(csv_)
+        bad, good = [1, 2, 3, 4, 5], [6, 7, 8, 9, 10]
+        ans = {"bad": bad, "good": good, "combinations": [
+            {"settings": {"a": 1, "b": 1}, "bad_share": 1.0, "good_share": 0.0},
+            {"settings": {"a": 0, "c": 1}, "bad_share": 0.5, "good_share": 0.4}]}
+        m = E.blame_metrics(d, "blame_combos", ans, {"outcome": "Performance-"})
+        self.assertEqual((m["n_combinations"], m["shares_correct"], m["false_share_claims"]), (2, 1, 1))
+        self.assertTrue(m["first_combo_typical"])
+        self.assertEqual((m["first_combo_lift"], m["best_pair_lift"], m["lift_ratio"]), (1.0, 1.0, 1.0))
+        self.assertEqual(m["combos_worse_overall"], 1)            # a=1&b=1 rows are slower; a=0&c=1 rows are not
+        items = A.check_request("APACHE-10", d, ans).items
+        self.assertEqual(sum(not ok_ and "shares" in n for n, ok_, _ in items), m["false_share_claims"])
+
+    def test_unknown_kind(self):
+        with self.assertRaises(ValueError):
+            E.blame_metrics(self.d, "groups", {}, {})
+
+
+class TestBlameExtract(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        tmp = Path(cls.tmp.name)
+        cars = O.load(E.DATA_DIR / "auto93.csv")
+        mpg = sorted(range(1, cars.n + 1), key=lambda r: cars.value(r, "Mpg+"))
+        poor, good = mpg[:20], mpg[-20:]
+        rank = json.dumps({"poor": poor, "ranking": ["Volume", "Clndrs", "Model"]})
+        contrast = json.dumps(_contrast_ans(cars, poor, good, ["Volume", "Clndrs", "Model"]))
+        both = lambda a, b: check_txt(f"ANSWER CAR-09 {a}\nANSWER CAR-10 {b}")
+        sem = lambda failed=(): json.dumps({"status": "pass", "runs": {"base": "ran", "shuffled": "ran"}, "requests": [
+            {"request_id": r, "status": "pass", "failed": list(failed), "notes": []} for r in ("CAR-09", "CAR-10")]})
+        scen = {("T1", 1): ("ok", both(rank, contrast), sem()),
+                ("T1", 2): ("ok", both(rank, contrast), sem(["shuffled:top-ranked column is strongly associated: x"])),
+                ("T1", 3): ("ok", check_txt(f"ANSWER CAR-09 {rank}", runs=False), sem()),
+                ("T2", 1): ("parse_failed", None, None),
+                ("T2", 2): ("ok", both(json.dumps({"poor": poor, "ranking": ["Volume", "Clndrs"]}), "{bad json}"), sem()),
+                ("T2", 3): ("ok", check_txt("no answers"), sem())}
+        cls.archive, cls.runs, cls.reqs = tmp / "z.zip", tmp / "runs.csv", tmp / "req.csv"
+        with zipfile.ZipFile(cls.archive, "w") as z:
+            for (t, k), (st, chk, sm) in scen.items():
+                if chk:
+                    z.writestr(E.entry_name(ROOT, MODEL, "cars", t, k, 5, "check.txt"), chk)
+                    z.writestr(E.entry_name(ROOT, MODEL, "cars", t, k, 5, "semantic.json"), sm)
+        cls.runs.write_text("model,domain,treatment,trial,skill_index,status,runs,semantic\n" + "".join(
+            f"{MODEL},cars,{t},{k},5,{st},True,pass\n" for (t, k), (st, _, _) in scen.items()))
+        cls.reqs.write_text("model,domain,treatment,trial,request_id,status\n" + "".join(
+            f"{MODEL},cars,{t},{k},{r},pass\n" for (t, k) in scen for r in ("CAR-09", "CAR-10")))
+        cls.before = sha(cls.archive)
+        cls.rows = E.extract_blame(cls.archive, cls.runs, cls.reqs, E.DATA_DIR, domains=("cars",))
+        cls.by = {(r["treatment"], r["trial"], r["request_id"]): r for r in cls.rows}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_outcomes_and_denominators(self):
+        self.assertEqual(len(self.rows), 36)
+        want = {("T1", 1): "", ("T1", 2): "", ("T1", 3): "execution_failure", ("T2", 1): "generation_failed",
+                ("T2", 2): "answer_schema_error", ("T2", 3): "answer_missing", ("T3", 1): "not_attempted"}
+        for (t, k), reason in want.items():
+            r = self.by[(t, k, "CAR-09")]
+            self.assertEqual(r["exclusion_reason"], reason, (t, k))
+            if reason:
+                self.assertFalse(r["success"] or r["primary"] or r["recomputable"])
+        self.assertEqual(self.by[("T2", 2, "CAR-10")]["exclusion_reason"], "answer_invalid_json")
+        r = self.by[("T1", 2, "CAR-09")]
+        self.assertEqual((r["shuffled_gate"], r["primary"]), ("fail", True))     # recorded, not gating
+        ok = self.by[("T1", 1, "CAR-09")]
+        self.assertTrue(ok["recomputable"] and ok["success"] and ok["rho_first_in_top3"])
+        self.assertEqual(self.by[("T1", 1, "CAR-10")]["false_values"], 0)
+        s = {(x["scope"], x["treatment"], x["request_id"]): x for x in E.summarize_blame(self.rows)}
+        t1 = s[("domain_treatment", "T1", "CAR-09")]
+        self.assertEqual((t1["attempted"], t1["executable"], t1["schema_valid"], t1["integrity_valid"],
+                          t1["successful"], t1["shuffled_failed_among_valid"]), (3, 2, 2, 2, 2, 1))
+        self.assertAlmostEqual(t1["delivery_rate"], 2 / 3)
+        t2 = s[("domain_treatment", "T2", "CAR-09")]
+        self.assertEqual((t2["integrity_valid"], t2["delivery_rate"], t2["conditional_success_rate"]), (0, 0.0, ""))
+        self.assertEqual(s[("domain", "all", "CAR-09")]["attempted"], 18)
+
+    def test_archive_untouched(self):
+        self.assertEqual(sha(self.archive), self.before)
+
+
+class TestBlameRealArchive(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.before = sha(E.ARCHIVE)
+        cls.rows = E.extract_blame()
+        cls.again = E.extract_blame()
+
+    def test_all_attempts(self):
+        self.assertEqual(len(self.rows), 108)
+        for rid in ("CAR-09", "CAR-10", "NASA-09", "NASA-10", "APACHE-09", "APACHE-10"):
+            self.assertEqual(sum(r["request_id"] == rid for r in self.rows), 18)
+
+    def test_agrees_with_frozen_checker(self):
+        z = zipfile.ZipFile(E.ARCHIVE)
+        for r in self.rows:
+            if not r["primary"]:
+                continue
+            data = O.load(E.DATA_DIR / E.DATASETS[r["domain"]])
+            ans = A.parse_answers(E.split_check(z.read(r["check_entry"]).decode())[1])[r["request_id"]]
+            items = A.check_request(r["request_id"], data, ans).items
+            key = (r["request_id"], r["treatment"], r["trial"])
+            self.assertEqual(all(ok for _, ok, _ in items), r["frozen_base_pass"], key)
+            if r["kind"] == "blame_rank" and (r["delta_first_in_top3"] or r["rho_first_in_top3"]):
+                self.assertTrue(all(ok for n, ok, _ in items if n.endswith("strongly associated")), key)
+            if r["kind"] == "blame_contrast":
+                self.assertEqual(sum(not ok and n.endswith(" value") for n, ok, _ in items), r["false_values"], key)
+            if r["kind"] == "blame_combos":
+                self.assertEqual(sum(not ok and n.endswith(" shares") for n, ok, _ in items), r["false_share_claims"])
+
+    def test_reference_table(self):
+        refs = {x["request_id"]: x for x in E.blame_reference_table()}
+        self.assertTrue(refs["APACHE-09"]["top_inputs"].startswith("keepAlive"))
+        self.assertTrue(refs["NASA-09"]["top"].startswith("MonthsX"))     # an X column, not a model input
+        self.assertFalse(refs["NASA-09"]["top_inputs"].startswith("MonthsX"))
+
+    def test_reproducible_and_untouched(self):
+        self.assertEqual(E.to_csv(self.rows, E.BLAME_FIELDS), E.to_csv(self.again, E.BLAME_FIELDS))
         self.assertEqual(sha(E.ARCHIVE), self.before)
