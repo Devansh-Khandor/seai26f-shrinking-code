@@ -1,7 +1,7 @@
 {
-  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; phase 3: Race (guided vs random selection, model vs historical-mean prediction); phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters; phase 4C: Cars T7 prediction adapters; phase 5C: Fix observed alternatives (Cars, Apache)",
+  "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; phase 3: Race (guided vs random selection, model vs historical-mean prediction); phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters; phase 4C: Cars T7 prediction adapters; phase 5C: Fix observed alternatives (Cars, Apache); phase 5D: Justify truthfulness",
   "status": "post-observation (added after the Task Talk; not pre-registered)",
-  "generated_utc": "2026-11-25T07:11:19+00:00",
+  "generated_utc": "2026-11-25T07:21:20+00:00",
   "command": "python -m harness.external",
   "model": "gpt-oss-20b",
   "protocol": {
@@ -213,6 +213,28 @@
       "APACHE-16": "target is the program's own value (frozen format). gap_reduction = |row - target| - |alternative - target|. success = target better than the row and in range, alternative closer to it, and no more changed settings than the minimum over all rows closer to the target",
       "NASA-15/16": "not independently measurable: NASA-15/16 answers report predicted effort/defects after a hypothetical change; no observed outcome exists for the changed project, so the improvement cannot be verified",
       "reported_values": "APACHE-15 performance.before/after are compared with the recorded values, never used"
+    },
+    "justify": {
+      "status": "post-hoc (added after the Task Talk); success rules are analysis choices unless they repeat a frozen checker rule",
+      "requests": {
+        "cars": [
+          "CAR-11",
+          "CAR-12"
+        ],
+        "nasa": [
+          "NASA-11",
+          "NASA-12"
+        ],
+        "apache": [
+          "APACHE-11",
+          "APACHE-12"
+        ]
+      },
+      "integrity_valid": "ran; ANSWER accepted by harness.answers.check_request; every cited cell value (neighbour values, pair differences) matches the file",
+      "justify_pair": "true trade-offs T = goals where the non-preferred row is strictly better (direction from the column suffix; ties are not trade-offs). Claimed C = the answer's `tradeoffs`. precision = |C&T|/|C| (blank if C empty), recall = |C&T|/|T| (blank if T empty), exact = C == T, false_claims = |C-T|, omissions = |T-C|. success = exact, preferred not dominated, every cited difference real and really different, scores rank the preferred row higher, and (CAR-12, frozen 'different strengths' rule) T non-empty",
+      "justify_neighbors": "subject = recommended row; d2h percentile = share of rows with strictly lower d2h (0 = best); good = Pareto-optimal or best 25% by any aggregate (frozen rule); neighbour similarity = among the 25% most similar rows by harness.oracle.XSpace (frozen rule) and the mean share of rows strictly closer. success = subject good and every neighbour similar",
+      "justify_estimate": "NASA-11: one held-out project; error |estimate - actual Effort-| and the training-mean error on that row. No mask rerun exists for this request, so leakage cannot be ruled out; the error is reported, not used for success. success = project held out, neighbours not held out and similar, estimate within [0.5 min, 2 max] of neighbour efforts (frozen rule)",
+      "meaning": "these check that explanations are truthful about recorded rows; they are not human-rated usefulness and not evidence that any change would cause an improvement"
     }
   },
   "inputs": {
@@ -255,8 +277,8 @@
     "code": {
       "external": {
         "path": "harness/external.py",
-        "sha256": "bd4cfd3e7cdbdf4c6f33332979c9f151a964139edfacf78430aea88271213a0f",
-        "bytes": 129784
+        "sha256": "c1e74e8b1057b99cff7e17fc6ce1f2c9abc2cec1f773269fa16c2458898d21f6",
+        "bytes": 151795
       },
       "answers": {
         "path": "harness/answers.py",
@@ -398,7 +420,7 @@
     }
   },
   "git": {
-    "commit": "6ec26a85031cf212fca12284e855c9a745e2e3a8",
+    "commit": "aba105ce44276b283e6b88594db6c57bd907f3c0",
     "branch": "analysis/external-metrics",
     "dirty": true
   },
@@ -415,7 +437,7 @@
       "sha256": "bfdf4537a3c13346996dbd2b9c6499ec6e5da58424e4827ca37ee7b8a7b222cd"
     },
     "prediction_report.md": {
-      "sha256": "f8ca11cc588e08d53d012d3cc9f72f17f9ca3789bcda490502d3dca655c375ab"
+      "sha256": "dc9d8c9d3ff733388dc81cc4c09dfb72650f15d2ca996d19ae81e9a3adc28257"
     },
     "selection_quality.csv": {
       "sha256": "35479bc46e332515390b91ffe682fe249924012c89835ab9633f249db6a65dda"
@@ -424,7 +446,7 @@
       "sha256": "3ecb40ca54175f50950b4ed8150d1ef79bf83a3eaded5591c8f59596f90fcfb0"
     },
     "selection_report.md": {
-      "sha256": "fc98cfd899d366a97071413ceb1f3b4874225223399694f9ed999614079995e7"
+      "sha256": "41e7222470aedd7337d46fee03d19d8ed8152212e389914afde0b887333a5bc0"
     },
     "race_selection.csv": {
       "sha256": "48487d69d56add1df70a6fd99aba8f5b56da4d4a272d9824fd6227f8bf08ca31"
@@ -436,13 +458,13 @@
       "sha256": "97b8d2880665321a8aa278ebd11e4b12d2dc546e3291fd87a1bae7cc6d0cc9b9"
     },
     "race_report.md": {
-      "sha256": "b455a480d3f731d9074a81ddc019494acc73a73cdcbe1eb1c974091cdf305aaa"
+      "sha256": "ff6ace3582c372783792904e68af6373cdf9180b5d0d2e290e21b76466569f99"
     },
     "t7_prediction.csv": {
       "sha256": "5a571583769304a7996d28ab319cb9a4e5d45fafc1e3aaae328c324b9ef71034"
     },
     "t7_prediction_report.md": {
-      "sha256": "508ccd7c5b37ca04c1ff882aa1fc42c8a6ac69cf1bd5157d1be4922c2c0741eb"
+      "sha256": "3b06ed39fedbe3ed28906f52752ad827caf424e4654be2eae9f19f5d82ba6d52"
     },
     "fix_quality.csv": {
       "sha256": "1dcaee78d75cba27291c10c2d8b7f50383110671092d4c318fdb4c8f6acd90a1"
@@ -451,7 +473,16 @@
       "sha256": "9068946bc2a3c65d963cdff7b4d450ace7dfd2332bee6a30ba7234b54affce92"
     },
     "fix_report.md": {
-      "sha256": "0690690f0ae2edecc22f8d921d568737c52c4aa9b449bd5f740130e86927d912"
+      "sha256": "1f74c9e7cf2fb48263b645445246ce5e80be598a1a96558ba26e75ff28ff1867"
+    },
+    "justify_quality.csv": {
+      "sha256": "776656d556a3cda7cdbc059bcb7c8162db216f472150e232cac0c8be40a836fd"
+    },
+    "justify_summary.csv": {
+      "sha256": "bdca193b453eef83d86ed325c9789a320536a63017d9b8bf50aea07714d7eaed"
+    },
+    "justify_report.md": {
+      "sha256": "21b81996c62eba713e902b8e292fd89b85fd602ffb0a7341d5f0571c85adf134"
     }
   }
 }

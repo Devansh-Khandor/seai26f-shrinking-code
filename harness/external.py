@@ -1240,6 +1240,339 @@ def fix_report(rows, summary, manifest):
     return "\n".join(lines)
 
 
+# ---- phase 5D: Justify (skill 6) ----------------------------------------------------
+
+JUSTIFY_STEP = 6
+JUSTIFY = {
+    "cars": ("CAR-11", "CAR-12"),
+    "nasa": ("NASA-11", "NASA-12"),
+    "apache": ("APACHE-11", "APACHE-12"),
+}
+
+JUSTIFY_FIELDS = [
+    "model", "domain", "treatment", "trial", "skill_index", "request_id", "kind",
+    "step_status", "step_runs", "step_semantic", "request_status",
+    "check_runs", "check_timed_out", "answer_state", "answer_detail", "shuffled_gate",
+    "fabricated_values", "integrity_valid",
+    # justify_pair
+    "row_a", "row_b", "preferred", "other", "true_tradeoffs", "claimed_tradeoffs", "n_true", "n_claimed", "n_correct",
+    "false_claims", "omissions", "precision", "recall", "exact_tradeoffs", "nontrivial_pair", "preferred_dominated",
+    "preference_agrees_d2h", "scores_consistent", "n_differences", "differences_not_different",
+    # justify_neighbors / justify_estimate
+    "subject_row", "subject_d2h", "subject_d2h_percentile", "subject_pareto", "subject_good",
+    "n_neighbors", "neighbors_similar", "neighbors_similar_frac", "neighbor_distance_percentile", "neighbors_heldout",
+    "estimate", "actual", "estimate_abs_error", "baseline_abs_error", "estimate_error_ratio", "estimate_consistent",
+    "success", "primary", "exclusion_reason", "notes",
+    "check_entry", "check_crc32", "check_sha256", "semantic_entry", "semantic_sha256",
+]
+
+JUSTIFY_PROTOCOL = {
+    "status": "post-hoc (added after the Task Talk); success rules are analysis choices unless they repeat a frozen "
+              "checker rule",
+    "requests": {d: list(v) for d, v in JUSTIFY.items()},
+    "integrity_valid": "ran; ANSWER accepted by harness.answers.check_request; every cited cell value (neighbour values, "
+                       "pair differences) matches the file",
+    "justify_pair": "true trade-offs T = goals where the non-preferred row is strictly better (direction from the column "
+                    "suffix; ties are not trade-offs). Claimed C = the answer's `tradeoffs`. precision = |C&T|/|C| "
+                    "(blank if C empty), recall = |C&T|/|T| (blank if T empty), exact = C == T, false_claims = |C-T|, "
+                    "omissions = |T-C|. success = exact, preferred not dominated, every cited difference real and really "
+                    "different, scores rank the preferred row higher, and (CAR-12, frozen 'different strengths' rule) T "
+                    "non-empty",
+    "justify_neighbors": "subject = recommended row; d2h percentile = share of rows with strictly lower d2h (0 = best); "
+                         "good = Pareto-optimal or best 25% by any aggregate (frozen rule); neighbour similarity = among "
+                         "the 25% most similar rows by harness.oracle.XSpace (frozen rule) and the mean share of rows "
+                         "strictly closer. success = subject good and every neighbour similar",
+    "justify_estimate": "NASA-11: one held-out project; error |estimate - actual Effort-| and the training-mean error on "
+                        "that row. No mask rerun exists for this request, so leakage cannot be ruled out; the error is "
+                        "reported, not used for success. success = project held out, neighbours not held out and "
+                        "similar, estimate within [0.5 min, 2 max] of neighbour efforts (frozen rule)",
+    "meaning": "these check that explanations are truthful about recorded rows; they are not human-rated usefulness and "
+               "not evidence that any change would cause an improvement",
+}
+
+
+def tradeoff_scores(data, pref, other, claimed):
+    """Truth and claim comparison for the goals on which OTHER beats PREF (strictly, by direction)."""
+    true = {g for g, w in data.goals() if w * data.value(other, g) > w * data.value(pref, g)}
+    claimed = set(claimed)
+    hit = claimed & true
+    return {
+        "true_tradeoffs": ";".join(sorted(true)), "claimed_tradeoffs": ";".join(sorted(claimed)),
+        "n_true": len(true), "n_claimed": len(claimed), "n_correct": len(hit),
+        "false_claims": len(claimed - true), "omissions": len(true - claimed),
+        "precision": len(hit) / len(claimed) if claimed else "",
+        "recall": len(hit) / len(true) if true else "",
+        "exact_tradeoffs": claimed == true, "nontrivial_pair": bool(true),
+    }
+
+
+def _neighbor_quality(data, center, items):
+    xs = O.XSpace(data)
+    near = xs.nearest(center, 0.25)
+    others = [o for o in range(1, data.n + 1) if o != center]
+    dist = {o: xs.dist(center, o) for o in others}
+    rows_, fab = [], 0
+    for e in items:
+        r = A.row(data, e["row"], "neighbor")
+        rows_.append(r)
+        fab += sum(1 for k, v in e["values"].items()
+                   if k not in data.names or not A.same_cell(data, r, k, v))
+    pct = [sum(dist[o] < dist[r] for o in others) / len(others) for r in rows_]
+    sim = sum(r in near for r in rows_)
+    return rows_, fab, {"n_neighbors": len(rows_), "neighbors_similar": sim, "neighbors_similar_frac": sim / len(rows_),
+                        "neighbor_distance_percentile": O.mean(pct)}
+
+
+def justify_metrics(data, kind, ans, rid=""):
+    """Independent metrics for one schema-valid Justify answer. Returns (metrics, fabricated, success)."""
+    s = O.d2h(data)
+    vals = list(s.values())
+    if kind == "justify_pair":
+        a, b = A.row(data, ans["a"], "a"), A.row(data, ans["b"], "b")
+        alias = {"a": a, "b": b}
+        pv = ans["preferred"]
+        pref = alias[pv] if isinstance(pv, str) and pv in alias else A.row(data, pv, "preferred")
+        other = b if pref == a else a
+        claimed = [g.strip() for g in ans["tradeoffs"]]
+        m = {"row_a": a, "row_b": b, "preferred": pref, "other": other}
+        m.update(tradeoff_scores(data, pref, other, claimed))
+        sc = {alias.get(k, None) or A.row(data, k, "scores key"): A.num(v) for k, v in ans["scores"].items()}
+        fab, same = 0, 0
+        for d in ans["differences"]:
+            f = d["feature"].strip()
+            fab += (not A.same_cell(data, a, f, d["a"])) + (not A.same_cell(data, b, f, d["b"]))
+            same += data.value(a, f) == data.value(b, f)
+        m.update(preferred_dominated=O.dominates(data, other, pref), preference_agrees_d2h=s[pref] < s[other],
+                 scores_consistent=sc[pref] > sc[other], n_differences=len(ans["differences"]),
+                 differences_not_different=same)
+        ok = (m["exact_tradeoffs"] and not m["preferred_dominated"] and same == 0 and m["scores_consistent"]
+              and (m["nontrivial_pair"] or not A.REQUESTS[rid][1].get("strengths")))
+        return m, fab, ok
+    if kind == "justify_neighbors":
+        rec = A.row(data, ans["recommended"], "recommended")
+        rows_, fab, m = _neighbor_quality(data, rec, ans["neighbors"])
+        good = rec in O.good_rows(data, 0.25)
+        m.update(subject_row=rec, subject_d2h=s[rec], subject_d2h_percentile=sum(v < s[rec] for v in vals) / len(vals),
+                 subject_pareto=rec in O.pareto(data), subject_good=good)
+        return m, fab, good and m["neighbors_similar"] == len(rows_)
+    if kind == "justify_estimate":
+        p = A.row(data, ans["project"], "project")
+        rows_, fab, m = _neighbor_quality(data, p, ans["neighbors"])
+        est, actual = A.num(ans["estimate"]), data.value(p, "Effort-")
+        mean, _, _ = baseline(data, "Effort-")
+        eff = [data.value(r, "Effort-") for r in rows_]
+        consistent = 0.5 * min(eff) <= est <= 2 * max(eff)
+        heldout_nb = sum(r % 5 == 0 for r in rows_)
+        berr = abs(mean - actual)
+        m.update(subject_row=p, estimate=est, actual=actual, estimate_abs_error=abs(est - actual),
+                 baseline_abs_error=berr, estimate_error_ratio=abs(est - actual) / berr if berr else "",
+                 estimate_consistent=consistent, neighbors_heldout=heldout_nb)
+        ok = p % 5 == 0 and heldout_nb == 0 and m["neighbors_similar"] == len(rows_) and consistent
+        return m, fab, ok
+    raise ValueError(f"not a Justify kind: {kind}")
+
+
+def _justify_row(z, names, root, model, domain, t, k, rid, data, runs, reqs):
+    kind = A.REQUESTS[rid][0]
+    row, ctx, ans, sem = _attempt(z, names, root, model, domain, t, k, JUSTIFY_STEP, rid, data, runs, reqs,
+                                  JUSTIFY_FIELDS, dict(kind=kind, shuffled_gate="not_run", integrity_valid=False,
+                                                       success=False))
+    if ctx is None:
+        return row
+    row["shuffled_gate"] = shuffled_gate(sem, rid)
+    m, fab, ok = justify_metrics(data, kind, ans, rid)
+    row.update(m)
+    row["fabricated_values"] = fab
+    if kind == "justify_estimate":
+        row["notes"] = "no mask rerun for this request: the single-row estimate error is not leakage-checked"
+    if fab:
+        row["exclusion_reason"] = "fabricated_values"
+        return row
+    row.update(integrity_valid=True, primary=True, success=ok)
+    return row
+
+
+def extract_justify(archive=ARCHIVE, runs_csv=RUNS_CSV, requirements_csv=REQUIREMENTS_CSV, data_dir=DATA_DIR,
+                    model=MODEL, domains=DOMAINS):
+    runs = _index(runs_csv, ("model", "domain", "treatment", "trial", "skill_index"))
+    reqs = _index(requirements_csv, ("model", "domain", "treatment", "trial", "request_id"))
+    rows = []
+    with zipfile.ZipFile(archive) as z:
+        names = set(z.namelist())
+        root = archive_root(names, model)
+        for domain in domains:
+            if set(JUSTIFY[domain]) != set(request_ids(domain, JUSTIFY_STEP)):
+                raise ValueError(f"{JUSTIFY[domain]} are not the frozen Justify requests of {domain}")
+            data = O.load(Path(data_dir) / DATASETS[domain])
+            for rid in JUSTIFY[domain]:
+                for t in TREATMENTS:
+                    for k in TRIALS:
+                        rows.append(_justify_row(z, names, root, model, domain, t, k, rid, data, runs, reqs))
+    keys = [(r["domain"], r["treatment"], r["trial"], r["request_id"]) for r in rows]
+    if len(keys) != len(set(keys)):
+        raise ValueError("duplicate trial records")
+    return rows
+
+
+JUSTIFY_SUMMARY_FIELDS = [
+    "scope", "domain", "treatment", "request_id", "kind",
+    "attempted", "executable", "schema_valid", "integrity_valid", "successful",
+    "generation_failed", "execution_failed", "answer_missing", "answer_invalid_json", "answer_schema_error",
+    "fabricated_values", "shuffled_failed_among_valid", "delivery_rate", "conditional_success_rate",
+    "exact_tradeoffs_n", "nontrivial_pairs_n", "false_claims_total", "omissions_total", "median_precision",
+    "median_recall", "preferred_dominated_n",
+    "median_subject_d2h_percentile", "subject_good_n", "median_neighbors_similar_frac",
+    "median_neighbor_distance_percentile", "median_estimate_error_ratio",
+]
+
+
+def _justify_cell(scope, domain, treatment, rid, sel):
+    prim = [r for r in sel if r["primary"]]
+    succ = sum(bool(r["success"]) for r in prim)
+    reasons = [r["exclusion_reason"] for r in sel]
+    kind = A.REQUESTS[rid][0] if rid in A.REQUESTS else ""
+    tot = lambda f: sum(r[f] for r in prim if r[f] != "")
+    return {
+        "scope": scope, "domain": domain, "treatment": treatment, "request_id": rid, "kind": kind,
+        "attempted": len(sel), "executable": sum(r["check_runs"] is True for r in sel),
+        "schema_valid": sum(r["answer_state"] == "valid" for r in sel), "integrity_valid": len(prim), "successful": succ,
+        "generation_failed": reasons.count("generation_failed") + reasons.count("not_attempted"),
+        "execution_failed": reasons.count("execution_failure") + reasons.count("execution_timeout"),
+        "answer_missing": reasons.count("answer_missing"), "answer_invalid_json": reasons.count("answer_invalid_json"),
+        "answer_schema_error": reasons.count("answer_schema_error"),
+        "fabricated_values": reasons.count("fabricated_values"),
+        "shuffled_failed_among_valid": sum(r["shuffled_gate"] == "fail" for r in sel if r["answer_state"] == "valid"),
+        "delivery_rate": _rate(succ, len(sel)), "conditional_success_rate": _rate(succ, len(prim)),
+        "exact_tradeoffs_n": sum(r["exact_tradeoffs"] is True for r in prim),
+        "nontrivial_pairs_n": sum(r["nontrivial_pair"] is True for r in prim),
+        "false_claims_total": tot("false_claims") if kind == "justify_pair" else "",
+        "omissions_total": tot("omissions") if kind == "justify_pair" else "",
+        "median_precision": _med([r["precision"] for r in prim]),
+        "median_recall": _med([r["recall"] for r in prim]),
+        "preferred_dominated_n": sum(r["preferred_dominated"] is True for r in prim),
+        "median_subject_d2h_percentile": _med([r["subject_d2h_percentile"] for r in prim]),
+        "subject_good_n": sum(r["subject_good"] is True for r in prim),
+        "median_neighbors_similar_frac": _med([r["neighbors_similar_frac"] for r in prim]),
+        "median_neighbor_distance_percentile": _med([r["neighbor_distance_percentile"] for r in prim]),
+        "median_estimate_error_ratio": _med([r["estimate_error_ratio"] for r in prim]),
+    }
+
+
+def summarize_justify(rows):
+    out = []
+    for d in DOMAINS:
+        for rid in JUSTIFY[d]:
+            for t in TREATMENTS:
+                sel = [r for r in rows if r["domain"] == d and r["treatment"] == t and r["request_id"] == rid]
+                if sel:
+                    out.append(_justify_cell("domain_treatment", d, t, rid, sel))
+            sel = [r for r in rows if r["domain"] == d and r["request_id"] == rid]
+            if sel:
+                out.append(_justify_cell("domain", d, "all", rid, sel))
+    return out
+
+
+def justify_report(rows, summary, manifest):
+    cells = [s for s in summary if s["scope"] == "domain_treatment"]
+    head = ("| domain | T | attempted | executable | schema valid | integrity valid | successful | delivery rate |")
+    lines = [
+        "# External metric, phase 5D: Justify — are the explanations truthful?",
+        "",
+        "**Status: post-observation analysis.** Added after the Task Talk; not part of the pre-registered plan in "
+        "`docs/hypotheses.md`. Success rules are analysis choices unless they repeat a frozen checker rule.",
+        "",
+        "**What this measures.** Whether the answer's claims about recorded rows are true: which goals the "
+        "non-preferred row really wins (trade-offs), whether the recommended row is really good, whether the cited "
+        "neighbours are really similar, and whether cited values exist in the file. It is **not** a human rating of "
+        "how useful an explanation is, and a truthful comparison of two recorded rows is not evidence that changing "
+        "one into the other would cause an improvement.",
+        "",
+        "**Integrity-valid** = ran, passed the frozen format check, and every cited cell value matches the file. The "
+        "programs may see all goal values (retrospective task), except NASA-11's held-out project, for which no mask "
+        "rerun exists.",
+        "",
+        "## Metric definitions",
+        "",
+        "| request | kind | metrics | success |",
+        "|---|---|---|---|",
+        "| CAR-12, NASA-12, APACHE-12 | `justify_pair` | true trade-offs T = goals where the non-preferred row is "
+        "strictly better (ties are not trade-offs); precision = \\|claimed ∩ T\\| / \\|claimed\\|, recall = \\|claimed ∩ "
+        "T\\| / \\|T\\| (blank when the denominator is 0); exact-set match; false claims and omissions counted separately; "
+        "whether the preferred row is dominated; whether the program's scores rank it higher | exact trade-offs, "
+        "preferred not dominated, cited differences real and really different, scores consistent; CAR-12 also needs "
+        "T non-empty (\"different strengths\", frozen) |",
+        "| CAR-11, APACHE-11 | `justify_neighbors` | recommended row's d2h and percentile (share of rows strictly "
+        "better; 0 = best); Pareto / good-row membership (frozen); neighbours among the 25% most similar (frozen "
+        "X-space) and their mean distance percentile | recommended row good and every neighbour similar |",
+        "| NASA-11 | `justify_estimate` | single held-out project: estimate error and the training-mean error on that "
+        "row (reported only: no leakage rerun exists); neighbours similar and not held out | project held out, "
+        "neighbours not held out and similar, estimate within the frozen neighbour range |",
+        "",
+    ]
+    for d in DOMAINS:
+        for rid in JUSTIFY[d]:
+            kind = A.REQUESTS[rid][0]
+            lines += [f"## {rid} (`{kind}`)", ""]
+            if kind == "justify_pair":
+                lines += [head.rstrip(" |") + " | exact trade-offs | non-trivial pairs | false claims | omissions | median "
+                          "precision | median recall | preferred dominated |",
+                          "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+            elif kind == "justify_neighbors":
+                lines += [head.rstrip(" |") + " | recommended good | median d2h percentile | median similar share | median "
+                          "neighbour distance percentile |", "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+            else:
+                lines += [head.rstrip(" |") + " | median similar share | median estimate error ÷ mean error (one row) |",
+                          "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+            for s in [x for x in cells if x["request_id"] == rid]:
+                base = (f"| {d} | {s['treatment']} | {s['attempted']} | {s['executable']} | {s['schema_valid']} | "
+                        f"{s['integrity_valid']} | {s['successful']} | {_pct(s['delivery_rate'])} |")
+                if kind == "justify_pair":
+                    base += (f" {s['exact_tradeoffs_n']} | {s['nontrivial_pairs_n']} | {s['false_claims_total']} | "
+                             f"{s['omissions_total']} | {_num(s['median_precision'], '.2f')} | "
+                             f"{_num(s['median_recall'], '.2f')} | {s['preferred_dominated_n']} |")
+                elif kind == "justify_neighbors":
+                    base += (f" {s['subject_good_n']} | {_num(s['median_subject_d2h_percentile'], '.3f')} | "
+                             f"{_num(s['median_neighbors_similar_frac'], '.2f')} | "
+                             f"{_num(s['median_neighbor_distance_percentile'], '.3f')} |")
+                else:
+                    base += (f" {_num(s['median_neighbors_similar_frac'], '.2f')} | "
+                             f"{_num(s['median_estimate_error_ratio'], '.2f')} |")
+                lines.append(base)
+            lines.append("")
+    lines += ["## By domain and request", "",
+              "| domain | request | attempted | executable | schema valid | integrity valid | successful | delivery rate | "
+              "conditional success | fabricated values | shuffled failures (valid) |",
+              "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    for s in [s for s in summary if s["scope"] == "domain"]:
+        lines.append(f"| {s['domain']} | {s['request_id']} | {s['attempted']} | {s['executable']} | {s['schema_valid']} | "
+                     f"{s['integrity_valid']} | {s['successful']} | {_pct(s['delivery_rate'])} | "
+                     f"{_pct(s['conditional_success_rate'])} | {s['fabricated_values']} | "
+                     f"{s['shuffled_failed_among_valid']} |")
+    lines += [
+        "", "## Limitations", "",
+        "- **Truthfulness, not usefulness.** These metrics check claims against recorded values and the frozen "
+        "similarity definition; nobody rated whether an explanation helps a customer.",
+        "- **Trivial pairs.** If the preferred row dominates the other, the true trade-off set is empty and an empty "
+        "claim is \"exact\" by default. `nontrivial_pairs_n` shows how many pairs really had trade-offs; recall is "
+        "blank for the rest.",
+        "- **Apache has one goal**, so its trade-off set is either empty or {Performance-}.",
+        "- **The program picks the pair and the recommended row.** An easy choice makes truthfulness easier.",
+        "- **d2h is one overall score**; the frozen checker accepts any of three aggregates for \"good\".",
+        "- **NASA-11 uses one held-out project** with no leakage rerun; its error is reported but not used for success.",
+        "- **Three trials per cell, often fewer usable.** No statistical test is applied.",
+        "- **T7 is not included.** NASA and Apache T7 have Justify adapters (`t7_validation/adapters/{nasa,apache}/"
+        "justify.py`) that answer these requests under the common protocol; Cars T7 has none. Scoring them would need a "
+        "separate, approved run of those adapters, as in phase 4B.",
+        "", "## Provenance", "",
+        f"- Archive: `{manifest['inputs']['archive']['path']}` (sha256 `{manifest['inputs']['archive']['sha256']}`)",
+        f"- Code commit: `{manifest['git']['commit']}` on `{manifest['git']['branch']}`"
+        f"{' (uncommitted changes present)' if manifest['git']['dirty'] else ''}",
+        f"- Command: `{manifest['command']}`",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 # ---- phase 4B: T7 prediction through the existing validation adapters ----------------
 
 T7_PROTOCOL = "v2-common: every-fifth-row hold-out, training-mean baseline (t7_validation adapter)"
@@ -1764,7 +2097,8 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
         "analysis": "external metrics phase 1: prediction MAE vs historical-mean baseline; phase 2: selection quality under a fixed inspection budget; "
                     "phase 3: Race (guided vs random selection, model vs historical-mean prediction); "
                     "phase 4B: T7 prediction (NASA, Apache) through the existing validation adapters; "
-                    "phase 4C: Cars T7 prediction adapters; phase 5C: Fix observed alternatives (Cars, Apache)",
+                    "phase 4C: Cars T7 prediction adapters; phase 5C: Fix observed alternatives (Cars, Apache); "
+                    "phase 5D: Justify truthfulness",
         "status": "post-observation (added after the Task Talk; not pre-registered)",
         "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "command": "python -m harness.external" + (" " + " ".join(argv) if argv else ""),
@@ -1785,6 +2119,7 @@ def build_manifest(archive, runs_csv, requirements_csv, data_dir, argv):
             "race": RACE_PROTOCOL,
             "t7_prediction": T7_PREDICTION_PROTOCOL,
             "fix": FIX_PROTOCOL,
+            "justify": JUSTIFY_PROTOCOL,
         },
         "inputs": {
             "archive": _file_info(archive),
@@ -2115,7 +2450,8 @@ def race_report(sel_rows, pred_rows, summary, manifest):
     return "\n".join(lines)
 
 
-def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=None, race=None, t7=None, fix=None):
+def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=None, race=None, t7=None, fix=None,
+                  justify=None):
     out = guard_out(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     files = {
@@ -2149,6 +2485,13 @@ def write_outputs(out_dir, rows, summary, manifest, sel_rows=None, sel_summary=N
             "fix_summary.csv": to_csv(fsum, FIX_SUMMARY_FIELDS),
             "fix_report.md": fix_report(frows, fsum, manifest),
         })
+    if justify is not None:
+        jrows, jsum = justify
+        files.update({
+            "justify_quality.csv": to_csv(jrows, JUSTIFY_FIELDS),
+            "justify_summary.csv": to_csv(jsum, JUSTIFY_SUMMARY_FIELDS),
+            "justify_report.md": justify_report(jrows, jsum, manifest),
+        })
     for name, text in files.items():
         (out / name).write_text(text, encoding="utf-8")
     manifest = dict(manifest, outputs={n: {"sha256": _sha(t.encode("utf-8"))} for n, t in files.items()})
@@ -2181,14 +2524,17 @@ def main(argv=None):
     t7 = None if a.skip_t7 else extract_t7_prediction(
         a.data_dir, specs=tuple(x for x in T7_PREDICTION if x[0] in domains))
     fix = extract_fix(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
+    just = extract_justify(a.archive, a.runs, a.requirements, a.data_dir, domains=domains)
     out = write_outputs(a.out, rows, summary, manifest, sel, sel_summary, (rsel, rpred, summarize_race(rsel, rpred)),
-                        t7, (fix, summarize_fix(fix)))
+                        t7, (fix, summarize_fix(fix)), (just, summarize_justify(just)))
     print(f"prediction: {len(rows)} attempts, {sum(r['primary'] for r in rows)} in the primary metric")
     print(f"selection:  {len(sel)} attempts, {sum(r['primary'] for r in sel)} in the primary metric")
     print(f"race selection:  {len(rsel)} attempts, {sum(r['primary'] for r in rsel)} in the primary metric")
     print(f"race prediction: {len(rpred)} attempts, {sum(r['primary'] for r in rpred)} in the primary metric")
     print(f"fix:             {len(fix)} attempts, {sum(r['primary'] for r in fix)} integrity-valid, "
           f"{sum(bool(r['success']) for r in fix)} successful")
+    print(f"justify:         {len(just)} attempts, {sum(r['primary'] for r in just)} integrity-valid, "
+          f"{sum(bool(r['success']) for r in just)} successful")
     if t7 is not None:
         print(f"T7 prediction:   {len(t7)} requests, {sum(r['primary'] for r in t7)} in the primary metric")
     print(f"wrote {out}")

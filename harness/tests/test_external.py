@@ -464,7 +464,8 @@ class TestOutputs(unittest.TestCase):
                               "selection_quality.csv", "selection_summary.csv", "selection_report.md",
                               "race_selection.csv", "race_prediction.csv", "race_summary.csv", "race_report.md",
                               "t7_prediction.csv", "t7_prediction_report.md",
-                              "fix_quality.csv", "fix_summary.csv", "fix_report.md"})
+                              "fix_quality.csv", "fix_summary.csv", "fix_report.md",
+                              "justify_quality.csv", "justify_summary.csv", "justify_report.md"})
             self.assertEqual({p: sha(p) for p in before}, before)
             with open(out / "prediction_mae.csv", newline="") as f:
                 got = list(csv.DictReader(f))
@@ -1498,6 +1499,204 @@ class TestFixRealArchive(unittest.TestCase):
         for r in self.rows:
             if r["success"]:
                 self.assertTrue(r["primary"] and r["integrity_valid"] and r["measurable"])
+
+    def test_reproducible_and_untouched(self):
+        self.assertEqual(self.rows, self.again)
+        self.assertEqual(sha(E.ARCHIVE), self.before)
+
+
+class TestJustifyMetrics(unittest.TestCase):
+    def setUp(self):
+        self.cars = _data(CARS_FIX_CSV)
+        self.s = O.d2h(self.cars)
+
+    def test_tradeoff_direction_precision_recall(self):
+        # row 7 (2050, 17, 33) vs preferred row 1 (2000, 16, 30): 7 wins Acc+ and Mpg+, loses Lbs- (lower is better)
+        t = E.tradeoff_scores(self.cars, 1, 7, ["Mpg+", "Lbs-"])
+        self.assertEqual(t["true_tradeoffs"], "Acc+;Mpg+")
+        self.assertEqual((t["n_true"], t["n_claimed"], t["n_correct"], t["false_claims"], t["omissions"]), (2, 2, 1, 1, 1))
+        self.assertEqual((t["precision"], t["recall"], t["exact_tradeoffs"]), (0.5, 0.5, False))
+        t = E.tradeoff_scores(self.cars, 1, 7, ["Acc+", "Mpg+"])
+        self.assertEqual((t["precision"], t["recall"], t["exact_tradeoffs"], t["nontrivial_pair"]), (1.0, 1.0, True, True))
+
+    def test_ties_are_not_tradeoffs(self):
+        tie = _data("x,Lbs-,Mpg+\n1,2000,30\n2,2000,25\n")
+        t = E.tradeoff_scores(tie, 2, 1, [])                     # row 1 better on Mpg+, tied on Lbs-
+        self.assertEqual(t["true_tradeoffs"], "Mpg+")
+        t = E.tradeoff_scores(tie, 1, 2, ["Lbs-"])               # a tie claimed as a trade-off is a false claim
+        self.assertEqual((t["n_true"], t["false_claims"], t["precision"], t["recall"]), (0, 1, 0.0, ""))
+
+    def test_empty_tradeoff_set(self):
+        t = E.tradeoff_scores(self.cars, 7, 4, [])               # row 7 dominates row 4
+        self.assertEqual((t["n_true"], t["exact_tradeoffs"], t["precision"], t["recall"], t["nontrivial_pair"]),
+                         (0, True, "", "", False))
+
+    def pair(self, **kw):
+        ans = {"a": 1, "b": 7, "preferred": "a", "scores": {"a": 2.0, "b": 1.0},
+               "differences": [{"feature": "Model", "a": 70, "b": 80}], "tradeoffs": ["Acc+", "Mpg+"]}
+        ans.update(kw)
+        return ans
+
+    def test_pair_success_and_checks(self):
+        m, fab, ok = E.justify_metrics(self.cars, "justify_pair", self.pair(), "CAR-12")
+        self.assertEqual((m["preferred"], m["other"], fab, m["differences_not_different"]), (1, 7, 0, 0))
+        self.assertFalse(m["preferred_dominated"])
+        self.assertTrue(m["scores_consistent"] and ok)
+        self.assertEqual(m["preference_agrees_d2h"], self.s[1] < self.s[7])
+
+    def test_pair_failures(self):
+        _, fab, _ = E.justify_metrics(self.cars, "justify_pair",
+                                      self.pair(differences=[{"feature": "Model", "a": 99, "b": 80}]), "CAR-12")
+        self.assertEqual(fab, 1)                                     # cited value not in the file
+        m, _, ok = E.justify_metrics(self.cars, "justify_pair",
+                                     self.pair(differences=[{"feature": "Clndrs", "a": 4, "b": 4}]), "CAR-12")
+        self.assertEqual((m["differences_not_different"], ok), (1, False))
+        m, _, ok = E.justify_metrics(self.cars, "justify_pair", self.pair(scores={"a": 0, "b": 1}), "CAR-12")
+        self.assertEqual((m["scores_consistent"], ok), (False, False))
+        m, _, ok = E.justify_metrics(self.cars, "justify_pair", self.pair(tradeoffs=["Mpg+"]), "CAR-12")
+        self.assertEqual((m["omissions"], ok), (1, False))
+
+    def test_dominated_and_trivial_pairs(self):
+        dom = {"a": 4, "b": 7, "preferred": 4, "scores": {"4": 1, "7": 0},
+               "differences": [{"feature": "Model", "a": 72, "b": 80}], "tradeoffs": ["Lbs-", "Acc+", "Mpg+"]}
+        m, _, ok = E.justify_metrics(self.cars, "justify_pair", dom, "CAR-12")
+        self.assertTrue(m["preferred_dominated"] and m["exact_tradeoffs"])
+        self.assertFalse(ok)
+        trivial = dict(dom, preferred=7, scores={"4": 0, "7": 1}, tradeoffs=[])
+        m, _, ok = E.justify_metrics(self.cars, "justify_pair", trivial, "CAR-12")
+        self.assertTrue(m["exact_tradeoffs"] and not m["nontrivial_pair"])
+        self.assertFalse(ok)                                          # CAR-12 needs different strengths (frozen)
+        self.assertTrue(E.justify_metrics(self.cars, "justify_pair", trivial, "NASA-12")[2])
+
+    def test_neighbors_quality(self):
+        near = O.XSpace(self.cars).nearest(7, 0.25)
+        nb = sorted(near)[:2] + [4]
+        ans = {"recommended": 7, "neighbors": [{"row": r, "values": {g: self.cars.value(r, g) for g, _ in
+                                                                     self.cars.goals()}} for r in nb]}
+        m, fab, ok = E.justify_metrics(self.cars, "justify_neighbors", ans)
+        self.assertEqual(fab, 0)
+        self.assertEqual(m["subject_d2h"], self.s[7])
+        self.assertEqual(m["subject_d2h_percentile"], sum(v < self.s[7] for v in self.s.values()) / 8)
+        self.assertEqual(m["neighbors_similar"], sum(r in near for r in nb))
+        self.assertEqual(ok, (7 in O.good_rows(self.cars, 0.25)) and m["neighbors_similar"] == 3)
+        bad = {"recommended": 7, "neighbors": [{"row": 1, "values": {"Mpg+": 99, "Wheels": 4}}] * 1
+               + ans["neighbors"][1:]}
+        self.assertEqual(E.justify_metrics(self.cars, "justify_neighbors", bad)[1], 2)
+
+    def test_estimate(self):
+        nasa = O.load(E.DATA_DIR / "nasa93dem.csv")
+        near = sorted(r for r in O.XSpace(nasa).nearest(5, 0.25) if r % 5)[:3]
+        est = O.mean([nasa.value(r, "Effort-") for r in near])
+        ans = {"project": 5, "estimate": est, "neighbors": [{"row": r, "values": {"Effort-": nasa.value(r, "Effort-")}}
+                                                            for r in near]}
+        m, fab, ok = E.justify_metrics(nasa, "justify_estimate", ans)
+        mean = E.baseline(nasa, "Effort-")[0]
+        self.assertEqual((fab, m["neighbors_heldout"], m["actual"]), (0, 0, nasa.value(5, "Effort-")))
+        self.assertAlmostEqual(m["estimate_abs_error"], abs(est - nasa.value(5, "Effort-")))
+        self.assertAlmostEqual(m["baseline_abs_error"], abs(mean - nasa.value(5, "Effort-")))
+        self.assertTrue(ok)
+        m, _, ok = E.justify_metrics(nasa, "justify_estimate", dict(ans, project=6))
+        self.assertFalse(ok)                                          # row 6 is not held out
+
+    def test_unknown_kind(self):
+        with self.assertRaises(ValueError):
+            E.justify_metrics(self.cars, "fix_targets", {})
+
+
+class TestJustifyExtract(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        tmp = Path(cls.tmp.name)
+        cars = O.load(E.DATA_DIR / "auto93.csv")
+        s = O.d2h(cars)
+        best = min(s, key=s.get)
+        near = sorted(O.XSpace(cars).nearest(best, 0.25))[:3]
+        goals = [g for g, _ in cars.goals()]
+        good = json.dumps({"recommended": best, "neighbors": [{"row": r, "values": {g: cars.value(r, g) for g in goals}}
+                                                               for r in near]})
+        fake = json.dumps({"recommended": best, "neighbors": [{"row": r, "values": {g: -1 for g in goals}}
+                                                               for r in near]})
+        scen = {("T1", 1): ("ok", check_txt(f"ANSWER CAR-11 {good}")), ("T1", 2): ("ok", check_txt(f"ANSWER CAR-11 {fake}")),
+                ("T1", 3): ("ok", check_txt(f"ANSWER CAR-11 {good}", runs=False)), ("T2", 1): ("parse_failed", None),
+                ("T2", 2): ("ok", check_txt("ANSWER CAR-11 {\"recommended\": 1}")), ("T2", 3): ("ok", check_txt("x"))}
+        cls.archive, cls.runs, cls.reqs = tmp / "z.zip", tmp / "runs.csv", tmp / "req.csv"
+        sem = json.dumps({"status": "pass", "runs": {"base": "ran", "shuffled": "ran"},
+                          "requests": [{"request_id": r, "status": "pass", "failed": [], "notes": []}
+                                       for r in ("CAR-11", "CAR-12")]})
+        with zipfile.ZipFile(cls.archive, "w") as z:
+            for (t, k), (st, chk) in scen.items():
+                if chk:
+                    z.writestr(E.entry_name(ROOT, MODEL, "cars", t, k, 6, "check.txt"), chk)
+                    z.writestr(E.entry_name(ROOT, MODEL, "cars", t, k, 6, "semantic.json"), sem)
+        cls.runs.write_text("model,domain,treatment,trial,skill_index,status,runs,semantic\n" + "".join(
+            f"{MODEL},cars,{t},{k},6,{st},True,pass\n" for (t, k), (st, _) in scen.items()))
+        cls.reqs.write_text("model,domain,treatment,trial,request_id,status\n" + "".join(
+            f"{MODEL},cars,{t},{k},{r},pass\n" for (t, k) in scen for r in ("CAR-11", "CAR-12")))
+        cls.before = sha(cls.archive)
+        cls.rows = E.extract_justify(cls.archive, cls.runs, cls.reqs, E.DATA_DIR, domains=("cars",))
+        cls.by = {(r["treatment"], r["trial"], r["request_id"]): r for r in cls.rows}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_outcomes_and_denominators(self):
+        self.assertEqual(len(self.rows), 36)
+        want = {("T1", 1): "", ("T1", 2): "fabricated_values", ("T1", 3): "execution_failure",
+                ("T2", 1): "generation_failed", ("T2", 2): "answer_schema_error", ("T2", 3): "answer_missing",
+                ("T3", 1): "not_attempted"}
+        for (t, k), reason in want.items():
+            r = self.by[(t, k, "CAR-11")]
+            self.assertEqual(r["exclusion_reason"], reason, (t, k))
+            if reason:
+                self.assertFalse(r["success"] or r["primary"], (t, k))
+        self.assertTrue(self.by[("T1", 1, "CAR-11")]["success"])
+        self.assertEqual(self.by[("T1", 2, "CAR-11")]["fabricated_values"], 9)
+        s = {(x["scope"], x["treatment"], x["request_id"]): x for x in E.summarize_justify(self.rows)}
+        t1 = s[("domain_treatment", "T1", "CAR-11")]
+        self.assertEqual((t1["attempted"], t1["executable"], t1["schema_valid"], t1["integrity_valid"],
+                          t1["successful"], t1["fabricated_values"]), (3, 2, 2, 1, 1, 1))
+        self.assertAlmostEqual(t1["delivery_rate"], 1 / 3)
+        t2 = s[("domain_treatment", "T2", "CAR-11")]
+        self.assertEqual((t2["successful"], t2["conditional_success_rate"]), (0, ""))
+
+    def test_archive_untouched(self):
+        self.assertEqual(sha(self.archive), self.before)
+
+
+class TestJustifyRealArchive(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.before = sha(E.ARCHIVE)
+        cls.rows = E.extract_justify()
+        cls.again = E.extract_justify()
+
+    def test_all_attempts(self):
+        self.assertEqual(len(self.rows), 108)
+        self.assertEqual(len({(r["domain"], r["treatment"], r["trial"], r["request_id"]) for r in self.rows}), 108)
+
+    def test_agrees_with_frozen_checker(self):
+        z = zipfile.ZipFile(E.ARCHIVE)
+        for r in self.rows:
+            if r["answer_state"] != "valid":
+                continue
+            data = O.load(E.DATA_DIR / E.DATASETS[r["domain"]])
+            ans = A.parse_answers(E.split_check(z.read(r["check_entry"]).decode())[1])[r["request_id"]]
+            items = {n.split(":", 1)[1]: ok for n, ok, _ in A.check_request(r["request_id"], data, ans).items}
+            if r["kind"] == "justify_pair":
+                self.assertEqual(items["tradeoffs are correct"], r["exact_tradeoffs"], r["request_id"])
+                self.assertEqual(items["preferred is not dominated"], not r["preferred_dominated"])
+                self.assertEqual(items["preferred has the higher score"], r["scores_consistent"])
+            if r["kind"] == "justify_neighbors":
+                self.assertEqual(items["recommended row is good"], r["subject_good"])
+            real = [ok for name, ok in items.items() if name.endswith("values are real")]
+            self.assertEqual(all(real), r["fabricated_values"] == 0, r["request_id"])
+
+    def test_success_implies_valid(self):
+        for r in self.rows:
+            if r["success"]:
+                self.assertTrue(r["primary"] and r["integrity_valid"])
 
     def test_reproducible_and_untouched(self):
         self.assertEqual(self.rows, self.again)
